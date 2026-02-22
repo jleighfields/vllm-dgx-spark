@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# cluster-lb-proxy.sh — start LiteLLM proxy load-balancing across multiple vLLM workers
+# cluster/lb-proxy.sh — start LiteLLM proxy load-balancing across multiple vLLM workers
 #
-# Run this on ONE node after all workers are up via cluster-lb-worker.sh.
+# Run this on ONE node after all workers are up via cluster/lb-worker.sh.
 # LiteLLM round-robins requests across all worker IPs.
 #
 # Usage:
-#   ./cluster-lb-proxy.sh <ip1> [ip2] [ip3] ...
+#   ./cluster/lb-proxy.sh <ip1> [ip2] [ip3] ...
 #
 # Example (3-node cluster):
-#   ./cluster-lb-proxy.sh 192.168.0.10 192.168.0.11 192.168.0.12
+#   ./cluster/lb-proxy.sh 192.168.0.10 192.168.0.11 192.168.0.12
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LITELLM_PORT=4000
 VLLM_PORT=8000
-LITELLM="$SCRIPT_DIR/.venv/bin/litellm"
-LITELLM_PID_FILE="$SCRIPT_DIR/.litellm.pid"
-CONFIG_FILE="$SCRIPT_DIR/.cluster-lb-litellm-config.yaml"
+LITELLM="$PROJECT_DIR/.venv/bin/litellm"
+LITELLM_PID_FILE="$PROJECT_DIR/.litellm.pid"
+CONFIG_FILE="$PROJECT_DIR/.cluster-lb-litellm-config.yaml"
 MODEL_NAME="Qwen/Qwen3-Coder-Next-FP8"
 SERVED_NAME="claude-sonnet-4-6"
 
@@ -38,7 +38,7 @@ wait_for_http() {
 # ── prereqs ───────────────────────────────────────────────────────────────────
 
 [[ $# -ge 1 ]] || die "Usage: $0 <ip1> [ip2] ..."
-[[ -x "$LITELLM" ]] || die "litellm not found. Run: uv sync --project $SCRIPT_DIR"
+[[ -x "$LITELLM" ]] || die "litellm not found. Run: uv sync --project $PROJECT_DIR"
 
 # ── generate config dynamically from provided IPs ─────────────────────────────
 
@@ -76,7 +76,7 @@ fi
 "$LITELLM" \
     --config "$CONFIG_FILE" \
     --port "$LITELLM_PORT" \
-    >> "$SCRIPT_DIR/litellm.log" 2>&1 &
+    >> "$PROJECT_DIR/litellm.log" 2>&1 &
 echo $! > "$LITELLM_PID_FILE"
 log "LiteLLM started (pid $!), logging to litellm.log"
 
@@ -90,7 +90,7 @@ cat <<EOF
 LiteLLM proxy running on port ${LITELLM_PORT}, load-balancing $# worker(s).
 
 Claude Code (this machine):
-  source "$SCRIPT_DIR/use-local.sh" && claude
+  source "$PROJECT_DIR/use-local.sh" && claude
 
 Claude Code (another machine):
   export ANTHROPIC_BASE_URL=http://${LOCAL_IP}:${LITELLM_PORT}

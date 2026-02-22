@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# cluster-ray-stop.sh — stop Ray cluster containers on this node
+# cluster/ray-stop.sh — stop Ray cluster containers on this node
 #
 # Run on the head node and on each worker node.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LITELLM_PID_FILE="$SCRIPT_DIR/.litellm.pid"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LITELLM_PID_FILE="$PROJECT_DIR/.litellm.pid"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 

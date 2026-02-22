@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# cluster-ray-worker.sh — join an existing Ray cluster as a worker node
+# cluster/ray-worker.sh — join an existing Ray cluster as a worker node
 #
-# Run this on each WORKER node AFTER cluster-ray-head.sh is running on the head.
+# Run this on each WORKER node AFTER cluster/ray-head.sh is running on the head.
 # Workers contribute their GPU to the shared tensor-parallel vLLM instance.
 # Workers do NOT need the model files downloaded locally.
 #
 # Usage:
-#   ./cluster-ray-worker.sh <head-ip>
+#   ./cluster/ray-worker.sh <head-ip>
 #
 # Example:
-#   ./cluster-ray-worker.sh 192.168.0.10
+#   ./cluster/ray-worker.sh 192.168.0.10
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v22"
 CONTAINER_NAME="vllm-ray-worker"
 RAY_PORT=6379
@@ -47,4 +47,4 @@ else
 fi
 
 log "Watch head node for loading progress: docker logs vllm-ray-head --follow"
-log "Stop this worker: ./cluster-ray-stop.sh"
+log "Stop this worker: ./cluster/ray-stop.sh"

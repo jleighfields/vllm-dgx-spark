@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# cluster-lb-worker.sh — start vLLM on this node only (no LiteLLM)
+# cluster/lb-worker.sh — start vLLM on this node only (no LiteLLM)
 #
 # Run this on EACH Spark in the cluster.
-# After all workers are up, run cluster-lb-proxy.sh on one node.
+# After all workers are up, run cluster/lb-proxy.sh on one node.
 #
 # Usage:
-#   ./cluster-lb-worker.sh
+#   ./cluster/lb-worker.sh
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v22"
 CONTAINER_NAME="vllm-server"
 VLLM_PORT=8000
-MODEL_DIR="$SCRIPT_DIR/models/Qwen3-Coder-Next-NVFP4"
+MODEL_DIR="$PROJECT_DIR/models/Qwen3-Coder-Next-NVFP4"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -55,7 +55,7 @@ else
         --ipc host \
         --name "$CONTAINER_NAME" \
         -v "$MODEL_DIR:/model" \
-        -v "$SCRIPT_DIR/.cache/vllm:/root/.cache/vllm" \
+        -v "$PROJECT_DIR/.cache/vllm:/root/.cache/vllm" \
         -e MODEL=/model \
         -e PORT="$VLLM_PORT" \
         -e GPU_MEMORY_UTIL=0.85 \
@@ -92,4 +92,4 @@ LOCAL_IP=$(hostname -I | awk '{print $1}')
 log "vLLM ready at http://${LOCAL_IP}:${VLLM_PORT}"
 log ""
 log "Add this node to the proxy. On the proxy node run:"
-log "  ./cluster-lb-proxy.sh ${LOCAL_IP} [other-ip] ..."
+log "  ./cluster/lb-proxy.sh ${LOCAL_IP} [other-ip] ..."

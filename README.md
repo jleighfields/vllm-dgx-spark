@@ -32,8 +32,8 @@ The result is noticeably faster first-token latency for every turn after the fir
 | KV cache (fp8, 256K ctx) | ~24 GB |
 | Total | ~64 GB |
 
-DGX Spark has 128 GB unified memory. At `gpu_memory_utilization=0.90` (~115 GB), this
-leaves ~51 GB of headroom. NVFP4 is NVIDIA's Blackwell-native FP4 format (E2M1, 16-value
+DGX Spark has 128 GB unified memory. At `gpu_memory_utilization=0.85` (~109 GB), this
+leaves ~45 GB of headroom. NVFP4 is NVIDIA's Blackwell-native FP4 format (E2M1, 16-value
 blocks) — ~10-15% faster than the open MXFP4 standard on the GB10 due to native silicon
 pathways.
 
@@ -49,10 +49,13 @@ pathways.
 ```bash
 cd ~/Documents/vllm-dgx-spark
 
-# 1. Install LiteLLM into project venv
+# 1. Create the project venv and install dependencies (LiteLLM, huggingface-hub)
+#    This must run before download-model.sh, which uses `uv run` to invoke Python.
 ~/.local/bin/uv sync
 
 # 2. Download the pre-quantized NVFP4 model (~40 GB)
+#    Downloads from HuggingFace into models/Qwen3-Coder-Next-NVFP4/.
+#    Takes a while depending on your connection speed.
 ./download-model.sh
 ```
 
@@ -69,10 +72,15 @@ cd ~/Documents/vllm-dgx-spark
 ./start.sh
 ```
 
-The vLLM container image is pulled automatically on first run. Model loading takes
-5-10 minutes. Watch progress with `docker logs vllm-server --follow`.
+The vLLM container image (`avarok/dgx-vllm-nvfp4-kernel:v22`) is pulled automatically
+on first run. The first cold start is slow (up to 15-30 minutes) because vLLM must
+compile torch kernels; this compilation is cached in `.cache/vllm/` so subsequent
+starts are much faster (typically 5-10 minutes). `start.sh` will wait up to 60 minutes
+for vLLM to become healthy before giving up.
 
-### Use Claude Code (on this machine)
+Watch progress with `docker logs vllm-server --follow`.
+
+### Use Claude Code (on local machine)
 
 ```bash
 source ~/Documents/vllm-dgx-spark/use-local.sh
@@ -115,13 +123,13 @@ across all workers. Scales linearly — N Sparks = N× throughput.
 
 ```bash
 cd ~/Documents/vllm-dgx-spark
-./cluster-lb-worker.sh
+./cluster/lb-worker.sh
 ```
 
 ### Start proxy (run on one node, after all workers are ready)
 
 ```bash
-./cluster-lb-proxy.sh 192.168.0.10 192.168.0.11 192.168.0.12
+./cluster/lb-proxy.sh 192.168.0.10 192.168.0.11 192.168.0.12
 ```
 
 ### Stop
@@ -181,10 +189,10 @@ sudo ufw allow from 192.168.0.0/24 to any port 6379
 
 ```bash
 # 1. On head node — pass total number of nodes
-./cluster-ray-head.sh 3
+./cluster/ray-head.sh 3
 
 # 2. On each worker node — pass head node IP
-./cluster-ray-worker.sh 192.168.0.10
+./cluster/ray-worker.sh 192.168.0.10
 ```
 
 vLLM starts automatically on the head node once all workers have joined.
@@ -194,7 +202,7 @@ Watch progress: `docker logs vllm-ray-head --follow`
 
 ```bash
 # Run on head node AND each worker node
-./cluster-ray-stop.sh
+./cluster/ray-stop.sh
 ```
 
 ---
@@ -208,11 +216,11 @@ Watch progress: `docker logs vllm-ray-head --follow`
 | `stop.sh` | Single-node / LB proxy: stop services |
 | `use-local.sh` | Source to configure Claude Code env vars |
 | `litellm-config.yaml` | Routes Claude model names → vLLM endpoint |
-| `cluster-lb-worker.sh` | Cluster (Option A): start vLLM on this node |
-| `cluster-lb-proxy.sh` | Cluster (Option A): start LiteLLM load-balancing proxy |
-| `cluster-ray-head.sh` | Cluster (Option B): start Ray head + vLLM |
-| `cluster-ray-worker.sh` | Cluster (Option B): join Ray cluster as worker |
-| `cluster-ray-stop.sh` | Cluster (Option B): stop Ray containers on this node |
+| `cluster/lb-worker.sh` | Cluster (Option A): start vLLM on this node |
+| `cluster/lb-proxy.sh` | Cluster (Option A): start LiteLLM load-balancing proxy |
+| `cluster/ray-head.sh` | Cluster (Option B): start Ray head + vLLM |
+| `cluster/ray-worker.sh` | Cluster (Option B): join Ray cluster as worker |
+| `cluster/ray-stop.sh` | Cluster (Option B): stop Ray containers on this node |
 
 ## Ports
 
@@ -231,7 +239,11 @@ to vLLM on port 8000. The `litellm-config.yaml` maps Claude model names
 (`claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`) to the local
 vLLM endpoint so Claude Code works without modification.
 
-The Docker image used (`avarok/dgx-vllm-nvfp4-kernel`) is a patched version of the
+Tool calling is enabled via `--enable-auto-tool-choice --tool-call-parser qwen3_coder`,
+so Claude Code's tool-use requests (file edits, bash commands, etc.) are translated
+into the model's native tool-calling format.
+
+The Docker image used (`avarok/dgx-vllm-nvfp4-kernel:v22`) is a patched version of the
 official NVIDIA vLLM container. The official container (26.01) lacks proper NVFP4
 kernel support for the DGX Spark's GB10 GPU (SM121) — CUTLASS FP4 GEMM tiles are
 sized for B200's 228 KiB shared memory but GB10 only has 99 KiB. The patched
@@ -306,9 +318,11 @@ docker logs vllm-server   # check for OOM or other errors
 ```
 
 **vLLM takes too long to start**
-First start is slower due to torch compilation. `start.sh` waits up to 60 minutes.
-The torch compile cache is persisted in `.cache/vllm/`, so subsequent starts are faster
-(typically 5-10 minutes).
+The first cold start is slow because vLLM compiles torch kernels for your GPU.
+`start.sh` waits up to 60 minutes. The torch compile cache is persisted in
+`.cache/vllm/`, so subsequent starts skip recompilation (typically 5-10 minutes).
+If the container exits during compilation, check logs for OOM errors and consider
+lowering `MAX_MODEL_LEN`.
 
 **Reduce memory if needed**
 Edit `start.sh`: change `MAX_MODEL_LEN=262144` to `131072` or lower.

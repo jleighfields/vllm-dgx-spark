@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
-# cluster-ray-head.sh — start a multi-node vLLM instance via Ray (HEAD node)
+# cluster/ray-head.sh — start a multi-node vLLM instance via Ray (HEAD node)
 #
 # Use this when a model is too large to fit on a single Spark and must be
 # sharded across multiple GPUs using tensor parallelism.
 #
 # For models that fit on one Spark (e.g. Qwen3-Coder-Next-FP8 at ~80 GB),
-# use the load-balancing approach instead (cluster-lb-worker.sh /
-# cluster-lb-proxy.sh) — it's simpler and gives better throughput.
+# use the load-balancing approach instead (cluster/lb-worker.sh /
+# cluster/lb-proxy.sh) — it's simpler and gives better throughput.
 #
 # Cluster setup order:
 #   1. Run this script on the HEAD node first.
-#   2. Run cluster-ray-worker.sh on each WORKER node, passing the head IP.
+#   2. Run cluster/ray-worker.sh on each WORKER node, passing the head IP.
 #   3. vLLM will start once all workers have joined.
 #
 # Usage:
-#   ./cluster-ray-head.sh <num_nodes>
+#   ./cluster/ray-head.sh <num_nodes>
 #
 # Example (3-node cluster):
-#   ./cluster-ray-head.sh 3
+#   ./cluster/ray-head.sh 3
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v22"
 CONTAINER_NAME="vllm-ray-head"
 VLLM_PORT=8000
 RAY_PORT=6379
-MODEL_DIR="$SCRIPT_DIR/models/Qwen3-Coder-Next-NVFP4"
+MODEL_DIR="$PROJECT_DIR/models/Qwen3-Coder-Next-NVFP4"
 NUM_NODES="${1:?Usage: $0 <num_nodes>}"
 # Each Spark has 1 GPU; total tensor-parallel size = number of nodes
 TOTAL_TP="$NUM_NODES"
@@ -74,7 +74,7 @@ else
         --ipc host \
         --name "$CONTAINER_NAME" \
         -v "$MODEL_DIR:/model" \
-        -v "$SCRIPT_DIR/.cache/vllm:/root/.cache/vllm" \
+        -v "$PROJECT_DIR/.cache/vllm:/root/.cache/vllm" \
         -e MODEL=/model \
         -e PORT="$VLLM_PORT" \
         -e GPU_MEMORY_UTIL=0.85 \
@@ -110,7 +110,7 @@ fi
 LOCAL_IP=$(hostname -I | awk '{print $1}')
 log ""
 log "Now run on each of the $((NUM_NODES - 1)) worker node(s):"
-log "  ./cluster-ray-worker.sh ${LOCAL_IP}"
+log "  ./cluster/ray-worker.sh ${LOCAL_IP}"
 log ""
 log "vLLM will begin loading once all $NUM_NODES nodes have joined."
 log "Watch progress: docker logs $CONTAINER_NAME --follow"
@@ -119,20 +119,20 @@ wait_for_http "http://localhost:${VLLM_PORT}/health" "vLLM ($NUM_NODES-node clus
 
 # ── LiteLLM ──────────────────────────────────────────────────────────────────
 
-LITELLM="$SCRIPT_DIR/.venv/bin/litellm"
-LITELLM_PID_FILE="$SCRIPT_DIR/.litellm.pid"
+LITELLM="$PROJECT_DIR/.venv/bin/litellm"
+LITELLM_PID_FILE="$PROJECT_DIR/.litellm.pid"
 LITELLM_PORT=4000
 
-[[ -x "$LITELLM" ]] || die "litellm not found. Run: uv sync --project $SCRIPT_DIR"
+[[ -x "$LITELLM" ]] || die "litellm not found. Run: uv sync --project $PROJECT_DIR"
 
 if [[ -f "$LITELLM_PID_FILE" ]] && kill -0 "$(cat "$LITELLM_PID_FILE")" 2>/dev/null; then
     log "LiteLLM already running (pid $(cat "$LITELLM_PID_FILE"))."
 else
     log "Starting LiteLLM proxy on port ${LITELLM_PORT} ..."
     "$LITELLM" \
-        --config "$SCRIPT_DIR/litellm-config.yaml" \
+        --config "$PROJECT_DIR/litellm-config.yaml" \
         --port "$LITELLM_PORT" \
-        >> "$SCRIPT_DIR/litellm.log" 2>&1 &
+        >> "$PROJECT_DIR/litellm.log" 2>&1 &
     echo $! > "$LITELLM_PID_FILE"
     log "LiteLLM started (pid $!), logging to litellm.log"
 fi
@@ -144,7 +144,7 @@ cat <<EOF
 $NUM_NODES-node Ray cluster ready.
 
 Claude Code (this machine):
-  source "$SCRIPT_DIR/use-local.sh" && claude
+  source "$PROJECT_DIR/use-local.sh" && claude
 
 Claude Code (another machine):
   export ANTHROPIC_BASE_URL=http://${LOCAL_IP}:${LITELLM_PORT}
@@ -152,6 +152,6 @@ Claude Code (another machine):
   claude
 
 Stop:
-  ./cluster-ray-stop.sh          # on head node
-  ./cluster-ray-stop.sh          # on each worker node
+  ./cluster/ray-stop.sh          # on head node
+  ./cluster/ray-stop.sh          # on each worker node
 EOF
