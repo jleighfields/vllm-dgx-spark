@@ -1,0 +1,31 @@
+# LiteLLM proxy configuration
+# Routes Claude Code (Anthropic Messages API) → vLLM (OpenAI API :8000)
+
+model_list:
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: openai/Qwen/Qwen3-Coder-Next-FP8
+      api_base: http://localhost:8000/v1
+      api_key: "none"
+      max_tokens: 16384
+
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: openai/Qwen/Qwen3-Coder-Next-FP8
+      api_base: http://localhost:8000/v1
+      api_key: "none"
+      max_tokens: 16384
+
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: openai/Qwen/Qwen3-Coder-Next-FP8
+      api_base: http://localhost:8000/v1
+      api_key: "none"
+      max_tokens: 16384
+
+litellm_settings:
+  drop_params: true
+  ignore_invalid_params: true
+  modify_params: true
+
+general_settings: {}
