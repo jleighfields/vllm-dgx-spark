@@ -1,22 +1,22 @@
-# vLLM — Qwen3-Coder-Next-FP8 with Prefix Caching
+# vLLM on DGX Spark — Qwen3-Coder-Next (NVFP4) with Prefix Caching
 
-Serves **Qwen3-Coder-Next-FP8** using the NVIDIA vLLM container with prefix caching
-enabled, bridged to Claude Code via LiteLLM.
+Serves **Qwen3-Coder-Next** using the NVIDIA vLLM container with NVFP4 quantization
+and prefix caching enabled, bridged to Claude Code via LiteLLM.
 
 ```
-Claude Code → LiteLLM :4000 (Anthropic API) → vLLM :8000 (OpenAI API) → Qwen3-Coder-Next-FP8
+Claude Code → LiteLLM :4000 (Anthropic API) → vLLM :8000 (OpenAI API) → Qwen3-Coder-Next-NVFP4
 ```
 
-## vLLM vs llama.cpp (Docker Model Runner)
+## Why vLLM on DGX Spark?
 
-| | vLLM (this project) | llama.cpp (`~/Documents/vllm_docker`) |
+| | vLLM (this project) | llama.cpp (Docker Model Runner) |
 |---|---|---|
-| **Model format** | FP8 safetensors (native) | GGUF MXFP4_MOE |
-| **Model size on disk** | ~80 GB | 43.7 GB |
+| **Model format** | NVFP4 safetensors (pre-quantized) | GGUF MXFP4_MOE |
+| **Model size on disk** | ~40 GB | 43.7 GB |
 | **Prefix caching** | Yes — GPU KV cache reuse | Limited |
 | **Throughput** | High (optimised for batching) | Moderate |
 | **First-token latency** | Lower after cache warm-up | Higher (no prefix cache) |
-| **Context length** | 256K (full native, MXFP4) | 256K (full native) |
+| **Context length** | 256K (full native) | 256K (full native) |
 | **Setup complexity** | Moderate | Simple |
 
 **Prefix caching explained:** Claude Code sends a large, identical system prompt at the
@@ -24,41 +24,36 @@ start of every request. vLLM detects the repeated prefix, stores its KV states i
 memory after the first request, and skips recomputing them on all subsequent requests.
 The result is noticeably faster first-token latency for every turn after the first.
 
-## Memory footprint
+## Memory Footprint
 
 | Component | Size |
 |-----------|------|
-| NVFP4 model weights (pre-quantized by `quantize.sh`) | ~40 GB |
+| NVFP4 model weights (pre-quantized by Cirrascale) | ~40 GB |
 | KV cache (fp8, 256K ctx) | ~24 GB |
 | Total | ~64 GB |
 
 DGX Spark has 128 GB unified memory. At `gpu_memory_utilization=0.90` (~115 GB), this
 leaves ~51 GB of headroom. NVFP4 is NVIDIA's Blackwell-native FP4 format (E2M1, 16-value
 blocks) — ~10-15% faster than the open MXFP4 standard on the GB10 due to native silicon
-pathways. The one-time quantization step (`quantize.sh`) runs in 20–40 min; after that
-vLLM loads the pre-quantized weights directly in 5–10 min.
+pathways.
 
 ## Prerequisites
 
-- Docker with GPU access
-- ~80 GB free for model storage (`models/` directory)
+- NVIDIA DGX Spark (or compatible GPU with 128 GB memory)
+- Docker with GPU access (`--gpus all`)
+- [uv](https://docs.astral.sh/uv/) package manager (`~/.local/bin/uv`)
+- ~40 GB free disk space for model storage (`models/` directory)
 
 ## Setup (run once)
 
 ```bash
-cd ~/Documents/vllm
+cd ~/Documents/vllm-dgx-spark
 
 # 1. Install LiteLLM into project venv
 ~/.local/bin/uv sync
 
-# 2. Download the model (~80 GB — takes a while)
+# 2. Download the pre-quantized NVFP4 model (~40 GB)
 ./download-model.sh
-
-# 3. Quantize FP8 → NVFP4 (one-time, 20–40 min)
-#    Produces a pre-quantized checkpoint that vLLM loads directly without
-#    runtime quantization. Saves ~20+ min on every subsequent start.
-#    NVFP4 uses Blackwell-native E2M1 format — ~10-15% faster than MXFP4 on GB10.
-./quantize.sh
 ```
 
 ## Single Node
@@ -70,20 +65,23 @@ Claude Code → LiteLLM :4000 → vLLM :8000 → GPU
 ### Start
 
 ```bash
-cd ~/Documents/vllm
+cd ~/Documents/vllm-dgx-spark
 ./start.sh
 ```
 
-Model takes 5–10 minutes to load from the pre-quantized NVFP4 checkpoint. Watch progress with `docker logs vllm-server --follow`.
+The vLLM container image is pulled automatically on first run. Model loading takes
+5-10 minutes. Watch progress with `docker logs vllm-server --follow`.
 
 ### Use Claude Code (on this machine)
 
 ```bash
-source ~/Documents/vllm/use-local.sh
+source ~/Documents/vllm-dgx-spark/use-local.sh
 claude
 ```
 
 ### Use Claude Code (from another machine)
+
+Replace the IP with your DGX Spark's address:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://192.168.0.7:4000
@@ -116,7 +114,7 @@ across all workers. Scales linearly — N Sparks = N× throughput.
 ### Start workers (run on each Spark)
 
 ```bash
-cd ~/Documents/vllm
+cd ~/Documents/vllm-dgx-spark
 ./cluster-lb-worker.sh
 ```
 
@@ -161,7 +159,7 @@ Claude Code → LiteLLM :4000 → vLLM :8000 (head node)
 be split across multiple GPUs using tensor parallelism. For example, a 200 GB model
 would need at least 2 Sparks with this approach.
 
-**Not needed for Qwen3-Coder-Next-FP8** (~80 GB weights + ~12 GB KV cache = ~92 GB,
+**Not needed for Qwen3-Coder-Next-NVFP4** (~40 GB weights + ~24 GB KV cache = ~64 GB,
 which fits on a single Spark). Use Option A instead for this model.
 
 **How it works:** vLLM uses [Ray](https://docs.ray.io) to coordinate across nodes.
@@ -205,8 +203,7 @@ Watch progress: `docker logs vllm-ray-head --follow`
 
 | File | Purpose |
 |------|---------|
-| `download-model.sh` | Download Qwen3-Coder-Next-FP8 from HuggingFace |
-| `quantize.sh` | One-time: quantize FP8 → NVFP4 using NVIDIA ModelOpt |
+| `download-model.sh` | Download pre-quantized Qwen3-Coder-Next-NVFP4 from HuggingFace |
 | `start.sh` | Single-node: start vLLM + LiteLLM |
 | `stop.sh` | Single-node / LB proxy: stop services |
 | `use-local.sh` | Source to configure Claude Code env vars |
@@ -216,7 +213,6 @@ Watch progress: `docker logs vllm-ray-head --follow`
 | `cluster-ray-head.sh` | Cluster (Option B): start Ray head + vLLM |
 | `cluster-ray-worker.sh` | Cluster (Option B): join Ray cluster as worker |
 | `cluster-ray-stop.sh` | Cluster (Option B): stop Ray containers on this node |
-| `litellm.log` | LiteLLM output (created at runtime) |
 
 ## Ports
 
@@ -226,6 +222,22 @@ Watch progress: `docker logs vllm-ray-head --follow`
 | 4000 | LiteLLM proxy | Anthropic-compatible (`/v1/messages`) |
 | 6379 | Ray GCS (Option B only) | Ray cluster coordination |
 
+## How It Works
+
+LiteLLM acts as a protocol translator. Claude Code speaks the Anthropic Messages API,
+but vLLM speaks the OpenAI Chat Completions API. LiteLLM sits in between, accepting
+Anthropic-format requests on port 4000 and forwarding them as OpenAI-format requests
+to vLLM on port 8000. The `litellm-config.yaml` maps Claude model names
+(`claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`) to the local
+vLLM endpoint so Claude Code works without modification.
+
+The Docker image used (`avarok/dgx-vllm-nvfp4-kernel`) is a patched version of the
+official NVIDIA vLLM container. The official container (26.01) lacks proper NVFP4
+kernel support for the DGX Spark's GB10 GPU (SM121) — CUTLASS FP4 GEMM tiles are
+sized for B200's 228 KiB shared memory but GB10 only has 99 KiB. The patched
+container fixes this with a software E2M1 conversion fallback and Marlin MoE backend
+routing for SM121.
+
 ## Useful Commands
 
 ```bash
@@ -234,10 +246,13 @@ docker logs vllm-server
 docker logs vllm-server --follow
 
 # View LiteLLM logs
-tail -f ~/Documents/vllm/litellm.log
+tail -f ~/Documents/vllm-dgx-spark/litellm.log
 
 # Check GPU memory usage
 nvidia-smi
+
+# Undo Claude Code local config
+source ~/Documents/vllm-dgx-spark/use-local.sh --reset
 ```
 
 ## Metrics
@@ -250,13 +265,7 @@ The most important metric for this use case. A high hit rate means vLLM is
 successfully skipping recomputation of Claude Code's system prompt.
 
 ```bash
-# Hit rate (hits / (hits + misses))
 curl -s http://localhost:8000/metrics | grep -E "prefix_cache_(hit|miss)_rate"
-```
-
-Expected output after a few requests:
-```
-vllm:prefix_cache_hit_rate{model_name="Qwen/Qwen3-Coder-Next-FP8"} 0.85
 ```
 
 A value above `0.7` is good. It will be `0` on the very first request and rise
@@ -288,7 +297,7 @@ watch -n 2 'curl -s http://localhost:8000/metrics | grep -E "(prefix_cache|gpu_c
 
 **Model not downloaded**
 ```bash
-./download-model.sh   # downloads ~80 GB
+./download-model.sh   # downloads ~40 GB
 ```
 
 **Container exits immediately**
@@ -297,36 +306,17 @@ docker logs vllm-server   # check for OOM or other errors
 ```
 
 **vLLM takes too long to start**
-`start.sh` waits up to 30 minutes. Loading the NVFP4 checkpoint normally takes 5–10 min.
-If you haven't run `./quantize.sh` yet, do that first (one-time, 20–40 min).
+First start is slower due to torch compilation. `start.sh` waits up to 60 minutes.
+The torch compile cache is persisted in `.cache/vllm/`, so subsequent starts are faster
+(typically 5-10 minutes).
 
 **Reduce memory if needed**
-Edit `start.sh`: change `--max-model-len 262144` to `--max-model-len 131072` or lower.
+Edit `start.sh`: change `MAX_MODEL_LEN=262144` to `131072` or lower.
 
 **LiteLLM auth error in Claude Code**
-Ensure `ANTHROPIC_AUTH_TOKEN=none` is exported.
+Ensure `ANTHROPIC_AUTH_TOKEN=none` is exported. LiteLLM does not require authentication
+by default.
 
 **Ray workers not joining (Option B)**
 Check that port 6379 is open between nodes and that all nodes are running the same
 vLLM image version. Check head node logs: `docker logs vllm-ray-head --follow`.
-
-## Quantization Notes
-
-`quantize.sh` runs inside the NVIDIA vLLM Docker container rather than using a local
-Python venv. This was necessary to work around three issues on the DGX Spark (ARM64):
-
-1. **`nvidia-modelopt` ≤ 0.27.0 + PyTorch 2.7+:** Older modelopt versions import
-   `torch.onnx._type_utils`, which was removed in PyTorch 2.7. Fix: use
-   `nvidia-modelopt>=0.35.0`, which officially requires `torch>2.6` and doesn't
-   use the removed API.
-
-2. **`nvidia-modelopt` requires `huggingface-hub<1.0`:** The main project needs
-   `huggingface-hub>=1.4.1` for LiteLLM and `snapshot_download`. These constraints
-   are mutually exclusive, so modelopt cannot be installed in the same venv as
-   the project. Fix: run quantization in the Docker container which has its own
-   Python environment.
-
-3. **ARM64 PyTorch from PyPI is CPU-only:** The standard `torch` wheel on PyPI
-   for `aarch64` does not include CUDA support, so the FP8 model loader fails with
-   `No GPU or XPU found`. The NVIDIA vLLM container ships a CUDA-enabled torch
-   built for the GB10, so quantization runs on GPU as expected.
