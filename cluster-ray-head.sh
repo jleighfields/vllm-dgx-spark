@@ -77,7 +77,7 @@ else
         -v "$SCRIPT_DIR/.cache/vllm:/root/.cache/vllm" \
         -e MODEL=/model \
         -e PORT="$VLLM_PORT" \
-        -e GPU_MEMORY_UTIL=0.90 \
+        -e GPU_MEMORY_UTIL=0.85 \
         -e MAX_MODEL_LEN=262144 \
         -e MAX_NUM_SEQS=128 \
         -e HEAD_IP="$LOCAL_IP" \
