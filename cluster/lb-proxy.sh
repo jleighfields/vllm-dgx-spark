@@ -13,12 +13,15 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=../model.conf
+source "$PROJECT_DIR/model.conf"
+
 LITELLM_PORT=4000
 VLLM_PORT=8000
 LITELLM="$PROJECT_DIR/.venv/bin/litellm"
 LITELLM_PID_FILE="$PROJECT_DIR/.litellm.pid"
 CONFIG_FILE="$PROJECT_DIR/.cluster-lb-litellm-config.yaml"
-MODEL_NAME="Qwen/Qwen3-Coder-Next-NVFP4"
 SERVED_NAME="claude-sonnet-4-6"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
@@ -50,7 +53,7 @@ for ip in "$@"; do
     cat >> "$CONFIG_FILE" <<YAML
   - model_name: $SERVED_NAME
     litellm_params:
-      model: openai/$MODEL_NAME
+      model: openai/$SERVED_MODEL_NAME
       api_base: http://${ip}:${VLLM_PORT}/v1
       api_key: "none"
 YAML

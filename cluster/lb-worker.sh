@@ -10,10 +10,14 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=../model.conf
+source "$PROJECT_DIR/model.conf"
+
 VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v23"
 CONTAINER_NAME="vllm-server"
 VLLM_PORT=8000
-MODEL_DIR="$PROJECT_DIR/models/Qwen3-Coder-Next-NVFP4"
+MODEL_DIR="$PROJECT_DIR/models/$MODEL_DIR_NAME"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -32,7 +36,7 @@ wait_for_http() {
 
 # ── prereqs ───────────────────────────────────────────────────────────────────
 
-[[ -f "$MODEL_DIR/config.json" ]] || die "NVFP4 model not found at $MODEL_DIR. Run: ./download-model.sh"
+[[ -f "$MODEL_DIR/config.json" ]] || die "Model not found at $MODEL_DIR. Run: ./download-model.sh"
 
 # ── vLLM container ────────────────────────────────────────────────────────────
 
@@ -49,6 +53,9 @@ else
     # The official NVIDIA vLLM container (26.01) lacks proper NVFP4 kernel support
     # for the DGX Spark's GB10 GPU (SM121). Avarok's patched container fixes this.
     # See: https://blog.avarok.net/we-unlocked-nvfp4-on-dgx-spark-and-its-20-faster-than-awq-72b0f3e58b83
+    extra_env_args=()
+    for kv in $EXTRA_DOCKER_ENVS; do extra_env_args+=(-e "$kv"); done
+
     docker run -d \
         --gpus all \
         --net host \
@@ -59,22 +66,20 @@ else
         -e MODEL=/model \
         -e PORT="$VLLM_PORT" \
         -e GPU_MEMORY_UTIL=0.85 \
-        -e MAX_MODEL_LEN=262144 \
+        -e MAX_MODEL_LEN="$MAX_MODEL_LEN" \
         -e MAX_NUM_SEQS=128 \
-        -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
-        -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
-        -e VLLM_NVFP4_GEMM_BACKEND=marlin \
         -e VLLM_DEEP_GEMM_WARMUP=skip \
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-        -e VLLM_EXTRA_ARGS="--served-model-name Qwen/Qwen3-Coder-Next-NVFP4 --quantization modelopt_fp4 --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser qwen3_coder" \
+        -e VLLM_EXTRA_ARGS="--served-model-name $SERVED_MODEL_NAME --quantization $QUANTIZATION --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser $TOOL_CALL_PARSER${EXTRA_VLLM_FLAGS:+ $EXTRA_VLLM_FLAGS}" \
+        "${extra_env_args[@]+"${extra_env_args[@]}"}" \
         "$VLLM_IMAGE" \
         serve
     #
-    # MAX_MODEL_LEN=262144 — set to the model's full 256K context. Claude Code
-    #   requests up to 32K output tokens, so anything less than input+32K will
-    #   cause vLLM to reject the request with a 400 error. vLLM only allocates
-    #   as much KV cache as GPU memory allows; requests exceeding available KV
-    #   cache are queued, not rejected.
+    # MAX_MODEL_LEN — set to the model's full context. Claude Code requests up to
+    #   32K output tokens, so anything less than input+32K will cause vLLM to
+    #   reject the request with a 400 error. vLLM only allocates as much KV cache
+    #   as GPU memory allows; requests exceeding available KV cache are queued,
+    #   not rejected.
     #
     # Startup optimization notes:
     #   -v .cache/vllm:/root/.cache/vllm — persists torch compile cache across

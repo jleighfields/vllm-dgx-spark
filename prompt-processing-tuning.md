@@ -1,5 +1,39 @@
 # Prompt Processing Speed — Tuning Notes
 
+## Overview
+
+Claude Code sends a large, identical system prompt at the start of every request.
+The key optimisation for this workload is **prefix caching**: vLLM detects the
+repeated prefix, stores its KV states in GPU memory after the first request, and
+skips recomputing them on all subsequent requests. Without it, every request must
+fully prefill the entire prompt from scratch, increasing time-to-first-token (TTFT)
+proportionally with context length.
+
+**The problem:** Qwen3-Coder-Next uses a hybrid **GatedDeltaNet + MoE** architecture
+(`Qwen3NextForCausalLM` in vLLM). Unlike pure transformer models, hybrid models that
+include Mamba or DeltaNet layers require special handling for prefix caching — the
+recurrent state of those layers cannot be cached and replayed the same way transformer
+KV cache blocks can. vLLM's support for this is marked experimental and, as tested
+below, produces a **0% prefix cache hit rate** in practice.
+
+**Impact:** Every Claude Code request fully recomputes the system prompt. At observed
+prefill throughput of ~1,000–6,700 tokens/s (depending on torch compile cache warmup),
+a typical Claude Code system prompt of ~50K tokens takes 7–50 seconds of prefill
+before the first output token. TTFT histogram shows 6 out of 25 requests taking 20–40s.
+
+**Root cause summary:** Not a configuration issue — it is an architectural limitation
+of the current vLLM build for this model. See tests below for details.
+
+> **Follow-up:** Switched to `RedHatAI/Qwen3-32B-NVFP4` (pure transformer, prefix
+> caching works) as of Feb 2026. Revisit Qwen3-Coder-Next when:
+> - A new avarok container image is released based on a vLLM commit after 2026-02-27
+> - vLLM PR #34798 (kernel-level chunk alignment for Mamba1) is merged
+> - vLLM issue #26201 (hybrid model prefix caching tracking) is closed
+>
+> Check https://github.com/vllm-project/vllm/issues/26201 for status.
+
+---
+
 ## Baseline
 
 - **Model:** Qwen3-Coder-Next-NVFP4

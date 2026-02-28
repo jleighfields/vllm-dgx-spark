@@ -1,18 +1,19 @@
-# vLLM on DGX Spark — Qwen3-Coder-Next (NVFP4) with Prefix Caching
+# vLLM on DGX Spark — Qwen3 (NVFP4) with Prefix Caching
 
-Serves **Qwen3-Coder-Next** using the NVIDIA vLLM container with NVFP4 quantization
-and prefix caching enabled, bridged to Claude Code via LiteLLM.
+Serves a **Qwen3 NVFP4** model using the Avarok vLLM container with NVFP4
+quantization and prefix caching enabled, bridged to Claude Code via LiteLLM.
+The active model is configured in a single `model.conf` file.
 
 ```
-Claude Code → LiteLLM :4000 (Anthropic API) → vLLM :8000 (OpenAI API) → Qwen3-Coder-Next-NVFP4
+Claude Code → LiteLLM :4000 (Anthropic API) → vLLM :8000 (OpenAI API) → Qwen3-NVFP4
 ```
 
 ## Why vLLM on DGX Spark?
 
 | | vLLM (this project) | llama.cpp (Docker Model Runner) |
 |---|---|---|
-| **Model format** | NVFP4 safetensors (pre-quantized) | GGUF MXFP4_MOE |
-| **Model size on disk** | ~40 GB | 43.7 GB |
+| **Model format** | NVFP4 safetensors (compressed-tensors) | GGUF MXFP4_MOE |
+| **Model size on disk** | ~18 GB | 43.7 GB |
 | **Prefix caching** | Yes — GPU KV cache reuse | Limited |
 | **Throughput** | High (optimised for batching) | Moderate |
 | **First-token latency** | Lower after cache warm-up | Higher (no prefix cache) |
@@ -24,18 +25,68 @@ start of every request. vLLM detects the repeated prefix, stores its KV states i
 memory after the first request, and skips recomputing them on all subsequent requests.
 The result is noticeably faster first-token latency for every turn after the first.
 
+## Switching Models
+
+Edit `model.conf` — all scripts source it automatically:
+
+```bash
+# model.conf — edit this file to switch models
+MODEL_REPO="Cirrascale/Qwen3-Coder-Next-NVFP4"   # HuggingFace repo to download
+MODEL_DIR_NAME="Qwen3-Coder-Next-NVFP4"           # local subdir under models/
+SERVED_MODEL_NAME="Cirrascale/Qwen3-Coder-Next-NVFP4"  # name vLLM advertises
+QUANTIZATION="modelopt_fp4"                        # vLLM quantization format
+MAX_MODEL_LEN=262144                               # model's max context window
+TOOL_CALL_PARSER="qwen3_coder"                     # tool call parser
+MAX_TOKENS=16384                                   # max LiteLLM response tokens
+EXTRA_VLLM_FLAGS=""                                # extra vLLM CLI args
+# Three flags required for NVFP4 MoE models on SM121 (see model.conf for details):
+EXTRA_DOCKER_ENVS="VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_TEST_FORCE_FP8_MARLIN=1"
+```
+
+After editing `model.conf`:
+```bash
+./stop.sh
+./download-model.sh   # if switching to a model not yet downloaded
+./start.sh
+```
+
+`start.sh` regenerates `litellm-config.yaml` automatically on every run, so it
+always stays in sync with `model.conf`.
+
 ## Memory Footprint
 
 | Component | Size |
 |-----------|------|
-| NVFP4 model weights (pre-quantized by Cirrascale) | ~40 GB |
-| KV cache (fp8, 256K ctx) | ~24 GB |
-| Total | ~64 GB |
+| NVFP4 model weights (Cirrascale/Qwen3-Coder-Next-NVFP4) | ~40 GB |
+| KV cache (256K ctx) | ~60 GB |
+| Total | ~100 GB |
 
-DGX Spark has 128 GB unified memory. At `gpu_memory_utilization=0.85` (~109 GB), this
-leaves ~45 GB of headroom. NVFP4 is NVIDIA's Blackwell-native FP4 format (E2M1, 16-value
-blocks) — ~10-15% faster than the open MXFP4 standard on the GB10 due to native silicon
-pathways.
+DGX Spark has 128 GB unified memory. At `gpu_memory_utilization=0.85` (~109 GB),
+this leaves ~9 GB of headroom for the 256K context window. NVFP4 is NVIDIA's
+Blackwell-native FP4 format (E2M1, 16-value blocks).
+
+## Model Alternatives
+
+Qwen3-Coder-Next uses a hybrid **GatedDeltaNet + MoE** architecture. vLLM's prefix
+caching support for these hybrid layers is experimental and currently non-functional
+(0% hit rate observed). If working prefix caching is a priority, the following
+pure-transformer alternatives are compatible with DGX Spark and fully support prefix
+caching in vLLM:
+
+| Model | Architecture | Quantization | Weights | Prefix caching | Notes |
+|---|---|---|---|---|---|
+| `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` | `qwen3_moe` — pure MoE, no Mamba | FP8 | ~18 GB | ✅ Works | Coding-specialized, same product line. Official Qwen FP8 release. |
+| `ig1/Qwen3-Coder-30B-A3B-Instruct-NVFP4` | `qwen3_moe` — pure MoE, no Mamba | NVFP4 | ~15 GB | ✅ Works | Requires vLLM nightly + `VLLM_USE_FLASHINFER_MOE_FP4=1` |
+| `Qwen/Qwen2.5-Coder-32B-Instruct` | `qwen2` — pure dense transformer | BF16 | ~64 GB | ✅ Works | Gold-standard 32B coder; no NVFP4 available |
+| `BCCard/Qwen2.5-Coder-32B-Instruct-FP8-Dynamic` | `qwen2` — pure dense transformer | FP8 | ~32 GB | ✅ Works | Community FP8 of above |
+| `Qwen/Qwen3-32B-FP8` | `qwen3` — pure dense transformer | FP8 | ~32 GB | ✅ Works | General purpose, not coding-specialized |
+| `RedHatAI/Qwen3-32B-NVFP4` | `qwen3` — pure dense transformer | NVFP4 | ~18 GB | ✅ Works | NVFP4 via compressed-tensors, vLLM >= 0.9.1 |
+| `Cirrascale/Qwen3-Coder-Next-NVFP4` *(current)* | Hybrid GatedDeltaNet+MoE | NVFP4 | ~40 GB | ❌ Broken | Fastest raw throughput but prefix caching non-functional |
+
+**Recommendation:** `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` is the closest drop-in
+replacement — coding-specialized, same `qwen3_coder` tool call parser, fits easily in
+128 GB, and prefix caching works. See `prompt-processing-tuning.md` for investigation
+details.
 
 ## Prerequisites
 
@@ -49,12 +100,15 @@ pathways.
 ```bash
 cd ~/Documents/vllm-dgx-spark
 
-# 1. Create the project venv and install dependencies (LiteLLM, huggingface-hub)
+# 1. (Optional) Edit model.conf to select which model to run.
+#    The defaults are already set for Cirrascale/Qwen3-Coder-Next-NVFP4.
+
+# 2. Create the project venv and install dependencies (LiteLLM, huggingface-hub)
 #    This must run before download-model.sh, which uses `uv run` to invoke Python.
 ~/.local/bin/uv sync
 
-# 2. Download the pre-quantized NVFP4 model (~40 GB)
-#    Downloads from HuggingFace into models/Qwen3-Coder-Next-NVFP4/.
+# 3. Download the pre-quantized NVFP4 model (~40 GB)
+#    Downloads from HuggingFace into models/<MODEL_DIR_NAME>/.
 #    Takes a while depending on your connection speed.
 ./download-model.sh
 ```
@@ -100,7 +154,8 @@ claude
 ### Stop
 
 ```bash
-./stop.sh
+./stop.sh           # stop services; keep container (preserves compiled kernel caches)
+./stop.sh --clean   # stop and remove container (required when switching models)
 ```
 
 ---
@@ -167,7 +222,7 @@ Claude Code → LiteLLM :4000 → vLLM :8000 (head node)
 be split across multiple GPUs using tensor parallelism. For example, a 200 GB model
 would need at least 2 Sparks with this approach.
 
-**Not needed for Qwen3-Coder-Next-NVFP4** (~40 GB weights + ~24 GB KV cache = ~64 GB,
+**Not needed for Qwen3-32B-NVFP4** (~18 GB weights + ~20 GB KV cache = ~38 GB,
 which fits on a single Spark). Use Option A instead for this model.
 
 **How it works:** vLLM uses [Ray](https://docs.ray.io) to coordinate across nodes.
@@ -211,11 +266,12 @@ Watch progress: `docker logs vllm-ray-head --follow`
 
 | File | Purpose |
 |------|---------|
-| `download-model.sh` | Download pre-quantized Qwen3-Coder-Next-NVFP4 from HuggingFace |
-| `start.sh` | Single-node: start vLLM + LiteLLM |
+| `model.conf` | **Model configuration** — edit this to switch models |
+| `download-model.sh` | Download the model configured in `model.conf` from HuggingFace |
+| `start.sh` | Single-node: start vLLM + LiteLLM (regenerates `litellm-config.yaml`) |
 | `stop.sh` | Single-node / LB proxy: stop services |
 | `use-local.sh` | Source to configure Claude Code env vars |
-| `litellm-config.yaml` | Routes Claude model names → vLLM endpoint |
+| `litellm-config.yaml` | Auto-generated by `start.sh` — do not edit directly |
 | `cluster/lb-worker.sh` | Cluster (Option A): start vLLM on this node |
 | `cluster/lb-proxy.sh` | Cluster (Option A): start LiteLLM load-balancing proxy |
 | `cluster/ray-head.sh` | Cluster (Option B): start Ray head + vLLM |
@@ -239,9 +295,10 @@ to vLLM on port 8000. The `litellm-config.yaml` maps Claude model names
 (`claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`) to the local
 vLLM endpoint so Claude Code works without modification.
 
-Tool calling is enabled via `--enable-auto-tool-choice --tool-call-parser qwen3_coder`,
-so Claude Code's tool-use requests (file edits, bash commands, etc.) are translated
-into the model's native tool-calling format.
+Tool calling is enabled via `--enable-auto-tool-choice --tool-call-parser <parser>`,
+where the parser is set per-model in `model.conf` (`qwen3_coder` for Cirrascale,
+`qwen3_xml` for RedHatAI). Claude Code's tool-use requests (file edits, bash
+commands, etc.) are translated into the model's native tool-calling format.
 
 ### Why the avarok container?
 
@@ -349,11 +406,29 @@ If the container exits during compilation, check logs for OOM errors and conside
 lowering `MAX_MODEL_LEN`.
 
 **Reduce memory if needed**
-Edit `start.sh`: change `MAX_MODEL_LEN=262144` to `131072` or lower.
+Edit `model.conf`: lower `MAX_MODEL_LEN` (e.g. `131072` instead of `262144`).
 
 **LiteLLM auth error in Claude Code**
 Ensure `ANTHROPIC_AUTH_TOKEN=none` is exported. LiteLLM does not require authentication
 by default.
+
+**Container crashes at startup with `cvt.e2m1x2 not supported on sm_121`**
+
+FlashInfer 0.6.3 (shipped in both v22 and v23 of the avarok container) includes
+Blackwell SM120 TMA grouped GEMM kernels that use the `cvt.e2m1x2` PTX instruction,
+which is not available on SM121 (GB10). When vLLM selects the `FLASHINFER_CUTLASS`
+MoE backend, it tries to JIT-compile these kernels and crashes.
+
+Fix: ensure `model.conf` has all three required env vars:
+```
+EXTRA_DOCKER_ENVS="VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_TEST_FORCE_FP8_MARLIN=1"
+```
+Then restart with a fresh container (the failed compilation may have left a corrupted
+cache in the container's writable layer):
+```bash
+./stop.sh --clean
+./start.sh
+```
 
 **Ray workers not joining (Option B)**
 Check that port 6379 is open between nodes and that all nodes are running the same
