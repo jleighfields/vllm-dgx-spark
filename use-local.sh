@@ -20,7 +20,7 @@ else
     export ANTHROPIC_AUTH_TOKEN="none"
     echo "Claude Code configured:"
     echo "  ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}"
-    echo "  Model: Qwen3-Coder-Next-FP8 via vLLM (prefix caching enabled)"
+    echo "  Model: Qwen3-Coder-Next-NVFP4 via vLLM (prefix caching enabled)"
     echo ""
     echo "Run: claude"
     echo "Undo: source use-local.sh --reset"

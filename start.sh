@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v22"
+VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v23"
 CONTAINER_NAME="vllm-server"
 VLLM_PORT=8000
 LITELLM_PORT=4000
@@ -70,9 +70,15 @@ else
         -e VLLM_NVFP4_GEMM_BACKEND=marlin \
         -e VLLM_DEEP_GEMM_WARMUP=skip \
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-        -e VLLM_EXTRA_ARGS="--served-model-name Qwen/Qwen3-Coder-Next-FP8 --quantization modelopt_fp4 --enable-prefix-caching --attention-backend flashinfer --kv-cache-dtype fp8 --enable-auto-tool-choice --tool-call-parser qwen3_coder" \
+        -e VLLM_EXTRA_ARGS="--served-model-name Qwen/Qwen3-Coder-Next-NVFP4 --quantization modelopt_fp4 --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser qwen3_coder" \
         "$VLLM_IMAGE" \
         serve
+    #
+    # --served-model-name Qwen/Qwen3-Coder-Next-NVFP4 — the name vLLM advertises
+    #   on its /v1/models endpoint. Must match the `model: openai/<name>` value in
+    #   litellm-config.yaml. The "Qwen/" prefix follows the HuggingFace org/repo
+    #   convention; "NVFP4" reflects the actual quantization format (NVIDIA FP4,
+    #   E2M1 with 16-value blocks), distinguishing it from FP8 variants.
     #
     # MAX_MODEL_LEN=262144 — set to the model's full 256K context. Claude Code
     #   requests up to 32K output tokens, so anything less than input+32K will

@@ -10,7 +10,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v22"
+VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v23"
 CONTAINER_NAME="vllm-server"
 VLLM_PORT=8000
 MODEL_DIR="$PROJECT_DIR/models/Qwen3-Coder-Next-NVFP4"
@@ -66,7 +66,7 @@ else
         -e VLLM_NVFP4_GEMM_BACKEND=marlin \
         -e VLLM_DEEP_GEMM_WARMUP=skip \
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-        -e VLLM_EXTRA_ARGS="--served-model-name Qwen/Qwen3-Coder-Next-FP8 --quantization modelopt_fp4 --enable-prefix-caching --attention-backend flashinfer --kv-cache-dtype fp8 --enable-auto-tool-choice --tool-call-parser qwen3_coder" \
+        -e VLLM_EXTRA_ARGS="--served-model-name Qwen/Qwen3-Coder-Next-NVFP4 --quantization modelopt_fp4 --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser qwen3_coder" \
         "$VLLM_IMAGE" \
         serve
     #

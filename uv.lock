@@ -1499,7 +1499,7 @@ wheels = [
 ]
 
 [[package]]
-name = "vllm"
+name = "vllm-dgx-spark"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

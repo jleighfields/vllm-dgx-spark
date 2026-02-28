@@ -14,7 +14,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v22"
+VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v23"
 CONTAINER_NAME="vllm-ray-worker"
 RAY_PORT=6379
 HEAD_IP="${1:?Usage: $0 <head-ip>}"

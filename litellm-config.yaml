@@ -2,23 +2,26 @@
 # Routes Claude Code (Anthropic Messages API) → vLLM (OpenAI API :8000)
 
 model_list:
+  # model: openai/<name> — "openai/" tells LiteLLM to use the OpenAI-compatible
+  #   API when forwarding to vLLM. The name after "openai/" must match
+  #   --served-model-name in start.sh (and cluster scripts).
   - model_name: claude-sonnet-4-6
     litellm_params:
-      model: openai/Qwen/Qwen3-Coder-Next-FP8
+      model: openai/Qwen/Qwen3-Coder-Next-NVFP4
       api_base: http://localhost:8000/v1
       api_key: "none"
       max_tokens: 16384
 
   - model_name: claude-opus-4-6
     litellm_params:
-      model: openai/Qwen/Qwen3-Coder-Next-FP8
+      model: openai/Qwen/Qwen3-Coder-Next-NVFP4
       api_base: http://localhost:8000/v1
       api_key: "none"
       max_tokens: 16384
 
   - model_name: claude-haiku-4-5-20251001
     litellm_params:
-      model: openai/Qwen/Qwen3-Coder-Next-FP8
+      model: openai/Qwen/Qwen3-Coder-Next-NVFP4
       api_base: http://localhost:8000/v1
       api_key: "none"
       max_tokens: 16384

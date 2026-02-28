@@ -72,7 +72,7 @@ cd ~/Documents/vllm-dgx-spark
 ./start.sh
 ```
 
-The vLLM container image (`avarok/dgx-vllm-nvfp4-kernel:v22`) is pulled automatically
+The vLLM container image (`avarok/dgx-vllm-nvfp4-kernel:v23`) is pulled automatically
 on first run. The first cold start is slow (up to 15-30 minutes) because vLLM must
 compile torch kernels; this compilation is cached in `.cache/vllm/` so subsequent
 starts are much faster (typically 5-10 minutes). `start.sh` will wait up to 60 minutes
@@ -243,12 +243,36 @@ Tool calling is enabled via `--enable-auto-tool-choice --tool-call-parser qwen3_
 so Claude Code's tool-use requests (file edits, bash commands, etc.) are translated
 into the model's native tool-calling format.
 
-The Docker image used (`avarok/dgx-vllm-nvfp4-kernel:v22`) is a patched version of the
-official NVIDIA vLLM container. The official container (26.01) lacks proper NVFP4
-kernel support for the DGX Spark's GB10 GPU (SM121) — CUTLASS FP4 GEMM tiles are
-sized for B200's 228 KiB shared memory but GB10 only has 99 KiB. The patched
-container fixes this with a software E2M1 conversion fallback and Marlin MoE backend
-routing for SM121.
+### Why the avarok container?
+
+The official NVIDIA vLLM container (`nvcr.io/nvidia/vllm`) does not work for NVFP4
+inference on the DGX Spark's GB10 GPU (SM121) through at least release 26.02. The
+root cause is a CUTLASS FP4 GEMM tile size mismatch: CUTLASS tiles were compiled for
+B200's 228 KiB shared memory but GB10 only has 99 KiB, causing a `Failed to run
+cutlass FP4 gemm on sm120` error.
+
+`avarok/dgx-vllm-nvfp4-kernel` fixes this with four runtime patches:
+
+1. **`fix_flashinfer_e2m1_sm121.py`** — software E2M1 conversion via bit manipulation,
+   replacing the missing `cvt.rn.satfinite.e2m1x2.f32` PTX instruction on GB10
+2. **`fix_flashinfer_nvfp4_moe_backend.py`** — fixes upstream vLLM bug in NVFP4 MoE
+   backend routing
+3. **`fix_capability_121_v112.py`** — routes SM 12.1 to SM 12.0 optimized paths for
+   FlashInfer and CUTLASS
+4. **`fix_mtp_nvfp4_exclusion.py`** — removes NVFP4 exclusion from speculative
+   decoding (MTP)
+
+As of vLLM v0.16.0 (released February 25, 2026), native SM121 CUTLASS tile support
+was merged (PR #33517), which should eventually make the avarok patches unnecessary.
+However, v0.16.0 has not yet been packaged into an official NVIDIA NGC container and
+has not been independently validated for the full modelopt_fp4 inference path on GB10.
+Until then, the avarok container remains the only pre-built option with verified
+NVFP4/modelopt_fp4 support on DGX Spark.
+
+References:
+- [Avarok NVFP4 breakthrough post](https://blog.avarok.net/we-unlocked-nvfp4-on-dgx-spark-and-its-20-faster-than-awq-72b0f3e58b83)
+- [avarok/dgx-vllm on GitHub](https://github.com/Avarok-Cybersecurity/dgx-vllm)
+- [vLLM PR #33517 — SM121 CUTLASS support](https://github.com/vllm-project/vllm/pull/33517)
 
 ## Useful Commands
 

@@ -4,7 +4,7 @@
 # Use this when a model is too large to fit on a single Spark and must be
 # sharded across multiple GPUs using tensor parallelism.
 #
-# For models that fit on one Spark (e.g. Qwen3-Coder-Next-FP8 at ~80 GB),
+# For models that fit on one Spark (e.g. Qwen3-Coder-Next-NVFP4 at ~40 GB),
 # use the load-balancing approach instead (cluster/lb-worker.sh /
 # cluster/lb-proxy.sh) — it's simpler and gives better throughput.
 #
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v22"
+VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v23"
 CONTAINER_NAME="vllm-ray-head"
 VLLM_PORT=8000
 RAY_PORT=6379
@@ -87,7 +87,7 @@ else
         -e VLLM_NVFP4_GEMM_BACKEND=marlin \
         -e VLLM_DEEP_GEMM_WARMUP=skip \
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-        -e VLLM_EXTRA_ARGS="--served-model-name Qwen/Qwen3-Coder-Next-FP8 --quantization modelopt_fp4 --enable-prefix-caching --attention-backend flashinfer --kv-cache-dtype fp8 --enable-auto-tool-choice --tool-call-parser qwen3_coder" \
+        -e VLLM_EXTRA_ARGS="--served-model-name Qwen/Qwen3-Coder-Next-NVFP4 --quantization modelopt_fp4 --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser qwen3_coder" \
         "$VLLM_IMAGE" \
         serve
     #

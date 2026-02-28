@@ -18,7 +18,7 @@ VLLM_PORT=8000
 LITELLM="$PROJECT_DIR/.venv/bin/litellm"
 LITELLM_PID_FILE="$PROJECT_DIR/.litellm.pid"
 CONFIG_FILE="$PROJECT_DIR/.cluster-lb-litellm-config.yaml"
-MODEL_NAME="Qwen/Qwen3-Coder-Next-FP8"
+MODEL_NAME="Qwen/Qwen3-Coder-Next-NVFP4"
 SERVED_NAME="claude-sonnet-4-6"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
