@@ -197,9 +197,11 @@ References:
 
 ### 4. Extending Context to 512K via YaRN ×2 (DEPLOYED)
 
-**Status: Adopted as the default 2026-05-02. Costs ~13% generation throughput
-in steady state (~33 t/s → ~28.5 t/s) but doubles the context ceiling and
-preserves all caching/quality behavior on prompts < native 256K.**
+**Status: Adopted as the default 2026-05-02. Generation throughput is within
+measurement noise of native 256K at matched prompt sizes (initial readings
+suggested a ~13% drop, but a controlled A/B with both configs showed the
+apparent gap was sample-size and prompt-size effects, not a real YaRN tax).
+The actual win is +2× compaction headroom for long sessions.**
 
 **Motivation:** With prefix caching working at native 256K (Test 3), there was
 headroom in the KV pool to extend the model's context ceiling. The Qwen3-Coder
@@ -223,37 +225,39 @@ Two non-obvious gotchas hit during deployment:
    1–256 (~3 min), not full kernel recompile. Total cold restart was ~10 min,
    not the 15-30 min I'd budgeted.
 
-**Verification (live Claude Code traffic, 2026-05-02 after switch):**
+**Verification (live Claude Code traffic, 2026-05-02):**
 
-Initial read (~10 min, 18 reqs) showed gen throughput within noise of 256K
-baseline. After more data accumulated (~28 reqs over ~30 min), the steady-state
-emerged: **gen throughput is meaningfully lower at 512K**. Hit rate, TTFT, and
-quality behavior on short prompts are unchanged.
+Initial read at 512K (~28 reqs) suggested a ~13% gen throughput drop vs an
+earlier 256K snapshot — that snapshot turned out to be misleading. A
+controlled A/B (~70 reqs at 512K, ~50 reqs at 256K with similar workload)
+showed the dominant factor in gen throughput is **prompt size**, not context
+config: large cached prompts (~150K) decode at ~23-27 t/s on either config
+because each decode step has to read more KV cache; small prompts (~50K) hit
+~30 t/s on either config.
 
-| Metric | At 256K (before) | At 512K (steady state) | Delta |
-|---|---|---|---|
-| Generation throughput | ~33–34 t/s | **~28.5 t/s** | **~13% slower** |
-| Per-cached-request hit rate | ~99.96% | ~99.93–99.97% | identical |
-| Avg TTFT (cached requests) | sub-second | sub-second | identical |
-| Max-context concurrency | ~5× | ~3.49× | tighter (irrelevant <2 sessions) |
-| Errors / OOM | 0 | 0 | — |
+| Metric | At 256K (matched workload) | At 512K (matched workload) |
+|---|---|---|
+| Gen throughput at ~150K prompts | ~23-25 t/s | ~25-27 t/s |
+| Gen throughput at ~50-70K prompts | ~30 t/s | ~30 t/s |
+| Per-cached-request hit rate | ~99.97% | ~99.96% |
+| Avg TTFT (cached requests) | sub-second | sub-second |
+| Max-context concurrency | ~7× | ~3.49× |
+| Errors / OOM | 0 | 0 |
 
-A 1000-token response is ~30s at 256K vs ~35s at 512K — a ~5s difference per
-turn that's noticeable but not painful for interactive use.
-
-**Likely causes of the gen throughput drop:**
-- YaRN rope scaling adds a small constant per-token cost on every decode step,
-  applied on all requests regardless of length.
-- Slightly larger CUDA graph footprint at the 512K shape.
+Any small remaining 256K-vs-512K gap is within run-to-run variance. The 5%
+or so that 512K *might* be slower (if anything) on some workloads is
+inconsequential next to the prompt-size effect.
 
 **Decision:** Adopted as default. Rationale: this project is used for long
-Claude Code coding sessions — heavy file reads, multi-step tool flows, deep
+agentic coding sessions — heavy file reads, multi-step tool flows, deep
 codebase exploration. In those sessions the conversation history grows
 quickly (often 10–20K tokens per turn vs ~2K for short Q&A), and the 512K
-ceiling pushes Claude Code's auto-compaction threshold from ~230K (at 256K
-native) to ~480K. That keeps more session history *in scope* before older
-turns get summarized away — usually more valuable than the ~5s/turn the
-larger context costs. Roll back to native 256K only if your sessions are
+ceiling pushes the upstream client's auto-compaction threshold from ~230K
+(at 256K native) to ~480K — roughly 2× more turns of verbatim history before
+any of it gets summarized into a single message. With gen throughput
+essentially the same at matched workloads, the only meaningful trade-off is
+the ~7× → ~3.49× max-context concurrency drop, which doesn't bind for 1-2
+concurrent sessions. Roll back to native 256K only if your sessions are
 predominantly short interactive Q&A — instructions in the "Rollback to native
 256K" block in `model.conf`.
 
