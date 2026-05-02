@@ -38,9 +38,11 @@ QUANTIZATION="modelopt_fp4"                              # vLLM quantization for
 MAX_MODEL_LEN=524288                                     # 512K via YaRN ×2 (model native is 262144)
 TOOL_CALL_PARSER="qwen3_coder"                           # tool call parser
 MAX_TOKENS=16384                                         # max LiteLLM response tokens
-# YaRN ×2 rope-scaling extends 256K → 512K. Verified 2026-05-02 with ~13%
-# generation throughput cost (~33 t/s → ~28.5 t/s) but no impact on caching
-# or short-context quality. Roll back if you don't need >256K context.
+# YaRN ×2 rope-scaling extends 256K → 512K. Default sized for long Claude Code
+# coding sessions where dense history (file reads + tool flows) would otherwise
+# trigger Claude Code's auto-compaction around ~230K; 512K pushes that threshold
+# to ~480K. Verified 2026-05-02 with ~13% generation throughput cost (~33 t/s →
+# ~28.5 t/s); caching, TTFT, and short-context quality unaffected.
 EXTRA_VLLM_FLAGS='--hf-overrides {"max_position_embeddings":524288,"rope_scaling":{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":262144}}'
 # Four required env flags: three for NVFP4 MoE on SM121, plus VLLM_ALLOW_LONG_MAX_MODEL_LEN
 # for the YaRN-extended max_model_len (see model.conf for details):

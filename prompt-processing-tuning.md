@@ -246,10 +246,16 @@ turn that's noticeable but not painful for interactive use.
   applied on all requests regardless of length.
 - Slightly larger CUDA graph footprint at the 512K shape.
 
-**Decision:** Adopted as default. The ~5s/turn cost is acceptable as standing
-overhead for the doubled context ceiling. Roll back to 256K if you have no
-real long-context workload — instructions in the "Rollback to native 256K"
-block in `model.conf`.
+**Decision:** Adopted as default. Rationale: this project is used for long
+Claude Code coding sessions — heavy file reads, multi-step tool flows, deep
+codebase exploration. In those sessions the conversation history grows
+quickly (often 10–20K tokens per turn vs ~2K for short Q&A), and the 512K
+ceiling pushes Claude Code's auto-compaction threshold from ~230K (at 256K
+native) to ~480K. That keeps more session history *in scope* before older
+turns get summarized away — usually more valuable than the ~5s/turn the
+larger context costs. Roll back to native 256K only if your sessions are
+predominantly short interactive Q&A — instructions in the "Rollback to native
+256K" block in `model.conf`.
 
 **Caveats not yet evaluated:**
 - YaRN×2 is theoretically applied on every request, including short prompts.
