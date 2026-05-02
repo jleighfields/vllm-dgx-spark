@@ -10,37 +10,44 @@ model_list:
   #   max_tokens in outgoing requests (Claude Code requests up to 32K output).
   - model_name: claude-sonnet-4-6
     litellm_params:
-      model: openai/Cirrascale/Qwen3-Coder-Next-NVFP4
+      model: openai/NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4
       api_base: http://localhost:8000/v1
       api_key: "none"
       max_tokens: 16384
     model_info:
-      max_tokens: 262144
+      max_tokens: 524288
       max_output_tokens: 16384
 
   - model_name: claude-opus-4-6
     litellm_params:
-      model: openai/Cirrascale/Qwen3-Coder-Next-NVFP4
+      model: openai/NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4
       api_base: http://localhost:8000/v1
       api_key: "none"
       max_tokens: 16384
     model_info:
-      max_tokens: 262144
+      max_tokens: 524288
       max_output_tokens: 16384
 
   - model_name: claude-haiku-4-5-20251001
     litellm_params:
-      model: openai/Cirrascale/Qwen3-Coder-Next-NVFP4
+      model: openai/NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4
       api_base: http://localhost:8000/v1
       api_key: "none"
       max_tokens: 16384
     model_info:
-      max_tokens: 262144
+      max_tokens: 524288
       max_output_tokens: 16384
 
 litellm_settings:
   drop_params: true
   ignore_invalid_params: true
   modify_params: true
+  # Strip Claude Code's per-request 'x-anthropic-billing-header' from system
+  # content so it doesn't poison vLLM's prefix cache (the header carries a
+  # per-turn 'cch=<hex>' hash that varies on every request — when present at
+  # the start of the system prompt, vLLM matches only ~32 tokens before the
+  # diverging hash and the entire downstream system prompt becomes uncacheable).
+  # See litellm_hooks.py for the implementation.
+  callbacks: ["litellm_hooks.cch_stripper"]
 
 general_settings: {}

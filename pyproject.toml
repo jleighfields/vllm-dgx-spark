@@ -1,7 +1,7 @@
 [project]
 name = "vllm-dgx-spark"
 version = "0.1.0"
-description = "Serve Qwen3-Coder-Next via vLLM on DGX Spark with prefix caching, bridged to Claude Code via LiteLLM"
+description = "Serve a Qwen3 NVFP4 model via vLLM on DGX Spark with prefix caching, bridged to Claude Code via LiteLLM"
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [

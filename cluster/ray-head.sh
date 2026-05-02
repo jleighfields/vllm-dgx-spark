@@ -4,9 +4,10 @@
 # Use this when a model is too large to fit on a single Spark and must be
 # sharded across multiple GPUs using tensor parallelism.
 #
-# For models that fit on one Spark (e.g. Qwen3-32B-NVFP4 at ~18 GB),
-# use the load-balancing approach instead (cluster/lb-worker.sh /
-# cluster/lb-proxy.sh) — it's simpler and gives better throughput.
+# For models that fit on one Spark (e.g. the default
+# NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4 at ~16 GB weights), use the
+# load-balancing approach instead (cluster/lb-worker.sh / cluster/lb-proxy.sh)
+# — it's simpler and gives better throughput.
 #
 # Cluster setup order:
 #   1. Run this script on the HEAD node first.

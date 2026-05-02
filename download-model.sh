@@ -13,8 +13,8 @@ MODEL_DIR="$SCRIPT_DIR/models/$MODEL_DIR_NAME"
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 mkdir -p "$MODEL_DIR"
-log "Downloading $MODEL_REPO (~18 GB) to $MODEL_DIR ..."
-log "This will take a while depending on your connection."
+log "Downloading $MODEL_REPO to $MODEL_DIR ..."
+log "This will take a while depending on the model size and your connection."
 
 ~/.local/bin/uv run --project "$SCRIPT_DIR" python -c "
 from huggingface_hub import snapshot_download

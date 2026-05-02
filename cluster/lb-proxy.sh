@@ -63,6 +63,11 @@ cat >> "$CONFIG_FILE" <<YAML
 litellm_settings:
   drop_params: true
   ignore_invalid_params: true
+  # Strip Claude Code's per-request 'x-anthropic-billing-header' from system
+  # content so it doesn't poison vLLM's prefix cache. Without this, every
+  # request misses the cache regardless of model. See litellm_hooks.py and
+  # prompt-processing-tuning.md "Test 3" for details.
+  callbacks: ["litellm_hooks.cch_stripper"]
 general_settings: {}
 YAML
 
@@ -76,7 +81,9 @@ if [[ -f "$LITELLM_PID_FILE" ]] && kill -0 "$(cat "$LITELLM_PID_FILE")" 2>/dev/n
     exit 1
 fi
 
-"$LITELLM" \
+# PYTHONPATH includes PROJECT_DIR so litellm_hooks.py is importable as
+# `litellm_hooks` (referenced from the generated config callbacks).
+PYTHONPATH="$PROJECT_DIR:${PYTHONPATH:-}" "$LITELLM" \
     --config "$CONFIG_FILE" \
     --port "$LITELLM_PORT" \
     >> "$PROJECT_DIR/litellm.log" 2>&1 &

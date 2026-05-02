@@ -83,8 +83,10 @@ else
     #
     # --served-model-name — the name vLLM advertises on its /v1/models endpoint.
     #   Must match the `model: openai/<name>` value in litellm-config.yaml.
-    # --quantization — set in model.conf (compressed-tensors for RedHatAI NVFP4,
-    #   modelopt_fp4 for Cirrascale NVFP4, awq/fp8 for other formats).
+    # --quantization — set in model.conf. Common values:
+    #   modelopt_fp4         — NVFP4 quants from the NVFP4/* and Cirrascale orgs
+    #   compressed-tensors   — NVFP4 quants from RedHatAI (and other compressed-tensors)
+    #   fp8 / awq            — non-NVFP4 quants
     #
     # MAX_MODEL_LEN — set to the model's full context. Claude Code requests up to
     #   32K output tokens, so anything less than input+32K will cause vLLM to
@@ -162,6 +164,13 @@ litellm_settings:
   drop_params: true
   ignore_invalid_params: true
   modify_params: true
+  # Strip Claude Code's per-request 'x-anthropic-billing-header' from system
+  # content so it doesn't poison vLLM's prefix cache (the header carries a
+  # per-turn 'cch=<hex>' hash that varies on every request — when present at
+  # the start of the system prompt, vLLM matches only ~32 tokens before the
+  # diverging hash and the entire downstream system prompt becomes uncacheable).
+  # See litellm_hooks.py for the implementation.
+  callbacks: ["litellm_hooks.cch_stripper"]
 
 general_settings: {}
 YAML
@@ -172,7 +181,9 @@ if [[ -f "$LITELLM_PID_FILE" ]] && kill -0 "$(cat "$LITELLM_PID_FILE")" 2>/dev/n
     log "LiteLLM already running (pid $(cat "$LITELLM_PID_FILE"))."
 else
     log "Starting LiteLLM proxy on port ${LITELLM_PORT} ..."
-    "$LITELLM" \
+    # PYTHONPATH includes SCRIPT_DIR so litellm_hooks.py is importable as
+    # `litellm_hooks` (referenced from litellm-config.yaml callbacks).
+    PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}" "$LITELLM" \
         --config "$LITELLM_CONFIG" \
         --port "$LITELLM_PORT" \
         >> "$SCRIPT_DIR/litellm.log" 2>&1 &

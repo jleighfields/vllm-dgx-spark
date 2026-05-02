@@ -12,12 +12,12 @@ Claude Code → LiteLLM :4000 (Anthropic API) → vLLM :8000 (OpenAI API) → Qw
 
 | | vLLM (this project) | llama.cpp (Docker Model Runner) |
 |---|---|---|
-| **Model format** | NVFP4 safetensors (compressed-tensors) | GGUF MXFP4_MOE |
-| **Model size on disk** | ~18 GB | 43.7 GB |
-| **Prefix caching** | Yes — GPU KV cache reuse | Limited |
+| **Model format** | NVFP4 safetensors (modelopt_fp4 / compressed-tensors) | GGUF MXFP4_MOE |
+| **Model size on disk** | ~16 GB (default) | 43.7 GB |
+| **Prefix caching** | Yes — GPU KV cache reuse (with this project's `cch` hook) | Limited |
 | **Throughput** | High (optimised for batching) | Moderate |
 | **First-token latency** | Lower after cache warm-up | Higher (no prefix cache) |
-| **Context length** | 256K (full native) | 256K (full native) |
+| **Context length** | 512K (via YaRN ×2) — native 256K | 256K (full native) |
 | **Setup complexity** | Moderate | Simple |
 
 **Prefix caching explained:** Claude Code sends a large, identical system prompt at the
@@ -31,16 +31,20 @@ Edit `model.conf` — all scripts source it automatically:
 
 ```bash
 # model.conf — edit this file to switch models
-MODEL_REPO="Cirrascale/Qwen3-Coder-Next-NVFP4"   # HuggingFace repo to download
-MODEL_DIR_NAME="Qwen3-Coder-Next-NVFP4"           # local subdir under models/
-SERVED_MODEL_NAME="Cirrascale/Qwen3-Coder-Next-NVFP4"  # name vLLM advertises
-QUANTIZATION="modelopt_fp4"                        # vLLM quantization format
-MAX_MODEL_LEN=262144                               # model's max context window
-TOOL_CALL_PARSER="qwen3_coder"                     # tool call parser
-MAX_TOKENS=16384                                   # max LiteLLM response tokens
-EXTRA_VLLM_FLAGS=""                                # extra vLLM CLI args
-# Three flags required for NVFP4 MoE models on SM121 (see model.conf for details):
-EXTRA_DOCKER_ENVS="VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_TEST_FORCE_FP8_MARLIN=1"
+MODEL_REPO="NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4"     # HuggingFace repo to download
+MODEL_DIR_NAME="Qwen3-Coder-30B-A3B-Instruct-FP4"        # local subdir under models/
+SERVED_MODEL_NAME="NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4"  # name vLLM advertises
+QUANTIZATION="modelopt_fp4"                              # vLLM quantization format
+MAX_MODEL_LEN=524288                                     # 512K via YaRN ×2 (model native is 262144)
+TOOL_CALL_PARSER="qwen3_coder"                           # tool call parser
+MAX_TOKENS=16384                                         # max LiteLLM response tokens
+# YaRN ×2 rope-scaling extends 256K → 512K. Verified 2026-05-02 with ~13%
+# generation throughput cost (~33 t/s → ~28.5 t/s) but no impact on caching
+# or short-context quality. Roll back if you don't need >256K context.
+EXTRA_VLLM_FLAGS='--hf-overrides {"max_position_embeddings":524288,"rope_scaling":{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":262144}}'
+# Four required env flags: three for NVFP4 MoE on SM121, plus VLLM_ALLOW_LONG_MAX_MODEL_LEN
+# for the YaRN-extended max_model_len (see model.conf for details):
+EXTRA_DOCKER_ENVS="VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"
 ```
 
 After editing `model.conf`:
@@ -57,43 +61,52 @@ always stays in sync with `model.conf`.
 
 | Component | Size |
 |-----------|------|
-| NVFP4 model weights (Cirrascale/Qwen3-Coder-Next-NVFP4) | ~40 GB |
-| KV cache (256K ctx) | ~60 GB |
-| Total | ~100 GB |
+| NVFP4 model weights (`NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4`, current) | ~16 GB |
+| KV cache pool (fp8_e4m3, sized by `gpu_memory_utilization`) | ~85 GB |
+| Total at runtime | ~101 GB |
 
 DGX Spark has 128 GB unified memory. At `gpu_memory_utilization=0.85` (~109 GB),
-this leaves ~9 GB of headroom for the 256K context window. NVFP4 is NVIDIA's
-Blackwell-native FP4 format (E2M1, 16-value blocks).
+the KV cache pool can hold the equivalent of **~3.5× max-context (512K)
+sequences** simultaneously, or many more short sequences via vLLM paging. Each
+in-flight 512K-token sequence costs ~25 GB of pool space (~12 GB at the model's
+native 256K). NVFP4 is NVIDIA's Blackwell-native FP4 format (E2M1, 16-value
+blocks).
 
 ## Model Alternatives
 
-Qwen3-Coder-Next uses a hybrid **GatedDeltaNet + MoE** architecture. vLLM's prefix
-caching support for these hybrid layers is experimental and currently non-functional
-(0% hit rate observed). If working prefix caching is a priority, the following
-pure-transformer alternatives are compatible with DGX Spark and fully support prefix
-caching in vLLM:
+The current model (`NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4`) is a pure `qwen3_moe`
+MoE — no Mamba layers — which is why prefix caching works in v23. The previous
+default (`Cirrascale/Qwen3-Coder-Next-NVFP4`) is a hybrid GatedDeltaNet+MoE
+architecture; vLLM's prefix-caching support for those hybrid layers is broken in
+v23 (0% hit rate). It can be revived once avarok ships v24+ — see
+`prompt-processing-tuning.md` Test 2 and the Cirrascale alternative-config block
+in `model.conf`.
 
 | Model | Architecture | Quantization | Weights | Prefix caching | Notes |
 |---|---|---|---|---|---|
-| `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` | `qwen3_moe` — pure MoE, no Mamba | FP8 | ~18 GB | ✅ Works | Coding-specialized, same product line. Official Qwen FP8 release. |
-| `ig1/Qwen3-Coder-30B-A3B-Instruct-NVFP4` | `qwen3_moe` — pure MoE, no Mamba | NVFP4 | ~15 GB | ✅ Works | Requires vLLM nightly + `VLLM_USE_FLASHINFER_MOE_FP4=1` |
-| `Qwen/Qwen2.5-Coder-32B-Instruct` | `qwen2` — pure dense transformer | BF16 | ~64 GB | ✅ Works | Gold-standard 32B coder; no NVFP4 available |
-| `BCCard/Qwen2.5-Coder-32B-Instruct-FP8-Dynamic` | `qwen2` — pure dense transformer | FP8 | ~32 GB | ✅ Works | Community FP8 of above |
-| `Qwen/Qwen3-32B-FP8` | `qwen3` — pure dense transformer | FP8 | ~32 GB | ✅ Works | General purpose, not coding-specialized |
-| `RedHatAI/Qwen3-32B-NVFP4` | `qwen3` — pure dense transformer | NVFP4 | ~18 GB | ✅ Works | NVFP4 via compressed-tensors, vLLM >= 0.9.1 |
-| `Cirrascale/Qwen3-Coder-Next-NVFP4` *(current)* | Hybrid GatedDeltaNet+MoE | NVFP4 | ~40 GB | ❌ Broken | Fastest raw throughput but prefix caching non-functional |
+| `NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4` *(current)* | `qwen3_moe` — pure MoE, no Mamba | NVFP4 (modelopt_fp4) | ~16 GB | ✅ Works (v23 + cch hook) | Coding-specialized, **512K context via YaRN ×2** (native 256K), ~32-45 t/s solo throughput. |
+| `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` | `qwen3_moe` — pure MoE, no Mamba | FP8 | ~18 GB | ✅ Works | Official Qwen FP8 release; same coder line. |
+| `Qwen/Qwen2.5-Coder-32B-Instruct` | `qwen2` — pure dense transformer | BF16 | ~64 GB | ✅ Works | Gold-standard 32B coder; no NVFP4 available. |
+| `BCCard/Qwen2.5-Coder-32B-Instruct-FP8-Dynamic` | `qwen2` — pure dense transformer | FP8 | ~32 GB | ✅ Works | Community FP8 of above. |
+| `Qwen/Qwen3-32B-FP8` | `qwen3` — pure dense transformer | FP8 | ~32 GB | ✅ Works | General purpose, not coding-specialized. |
+| `RedHatAI/Qwen3-32B-NVFP4` | `qwen3` — pure dense transformer | NVFP4 (compressed-tensors) | ~18 GB | ✅ Works | General purpose. |
+| `Cirrascale/Qwen3-Coder-Next-NVFP4` | Hybrid GatedDeltaNet+MoE | NVFP4 (modelopt_fp4) | ~40 GB | ❌ Broken on v23 | Fastest raw throughput when caching works. Revival needs avarok v24+ AND the cch hook (see below). |
 
-**Recommendation:** `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` is the closest drop-in
-replacement — coding-specialized, same `qwen3_coder` tool call parser, fits easily in
-128 GB, and prefix caching works. See `prompt-processing-tuning.md` for investigation
-details.
+**Note on prefix caching for Claude Code workloads:** Claude Code prepends a
+per-request `x-anthropic-billing-header: ... cch=<hex>;` to every system prompt,
+where `cch` changes on every turn. Without intervention this defeats vLLM's
+prefix cache regardless of model (observed: 0.06% per-request hit rate). This
+project ships a LiteLLM pre-call hook (`litellm_hooks.py`) that strips that
+header before forwarding to vLLM, restoring near-100% per-request cache hits.
+Full diagnosis in `prompt-processing-tuning.md` Test 3.
 
 ## Prerequisites
 
 - NVIDIA DGX Spark (or compatible GPU with 128 GB memory)
 - Docker with GPU access (`--gpus all`)
 - [uv](https://docs.astral.sh/uv/) package manager (`~/.local/bin/uv`)
-- ~40 GB free disk space for model storage (`models/` directory)
+- ~20 GB free disk space for the default model (more if you keep multiple
+  alternatives under `models/`)
 
 ## Setup (run once)
 
@@ -101,15 +114,15 @@ details.
 cd ~/Documents/vllm-dgx-spark
 
 # 1. (Optional) Edit model.conf to select which model to run.
-#    The defaults are already set for Cirrascale/Qwen3-Coder-Next-NVFP4.
+#    The default is NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4.
 
 # 2. Create the project venv and install dependencies (LiteLLM, huggingface-hub)
 #    This must run before download-model.sh, which uses `uv run` to invoke Python.
 ~/.local/bin/uv sync
 
-# 3. Download the pre-quantized NVFP4 model (~40 GB)
+# 3. Download the pre-quantized NVFP4 model
 #    Downloads from HuggingFace into models/<MODEL_DIR_NAME>/.
-#    Takes a while depending on your connection speed.
+#    Default model is ~16 GB; larger alternatives in model.conf can reach 40 GB+.
 ./download-model.sh
 ```
 
@@ -222,8 +235,9 @@ Claude Code → LiteLLM :4000 → vLLM :8000 (head node)
 be split across multiple GPUs using tensor parallelism. For example, a 200 GB model
 would need at least 2 Sparks with this approach.
 
-**Not needed for Qwen3-32B-NVFP4** (~18 GB weights + ~20 GB KV cache = ~38 GB,
-which fits on a single Spark). Use Option A instead for this model.
+**Not needed for the default model** (`NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4`,
+~16 GB weights — even with 512K context via YaRN ×2 there's ample headroom for
+~3.5× concurrent max-context sequences on a single Spark). Use Option A instead.
 
 **How it works:** vLLM uses [Ray](https://docs.ray.io) to coordinate across nodes.
 Each GPU holds one shard of the model. All GPUs collaborate to process every request,
@@ -272,6 +286,8 @@ Watch progress: `docker logs vllm-ray-head --follow`
 | `stop.sh` | Single-node / LB proxy: stop services |
 | `use-local.sh` | Source to configure Claude Code env vars |
 | `litellm-config.yaml` | Auto-generated by `start.sh` — do not edit directly |
+| `litellm_hooks.py` | LiteLLM pre-call hook that strips Claude Code's per-request `cch=` header so prefix caching works (see `prompt-processing-tuning.md` Test 3) |
+| `prompt-processing-tuning.md` | Investigation log: prefix-cache failures, root causes, fixes |
 | `cluster/lb-worker.sh` | Cluster (Option A): start vLLM on this node |
 | `cluster/lb-proxy.sh` | Cluster (Option A): start LiteLLM load-balancing proxy |
 | `cluster/ray-head.sh` | Cluster (Option B): start Ray head + vLLM |
@@ -296,9 +312,10 @@ to vLLM on port 8000. The `litellm-config.yaml` maps Claude model names
 vLLM endpoint so Claude Code works without modification.
 
 Tool calling is enabled via `--enable-auto-tool-choice --tool-call-parser <parser>`,
-where the parser is set per-model in `model.conf` (`qwen3_coder` for Cirrascale,
-`qwen3_xml` for RedHatAI). Claude Code's tool-use requests (file edits, bash
-commands, etc.) are translated into the model's native tool-calling format.
+where the parser is set per-model in `model.conf` (`qwen3_coder` for the Qwen3-Coder
+family, `qwen3_xml` for the general-purpose Qwen3 dense models like RedHatAI's). Claude
+Code's tool-use requests (file edits, bash commands, etc.) are translated into the
+model's native tool-calling format.
 
 ### Why the avarok container?
 
@@ -390,7 +407,7 @@ watch -n 2 'curl -s http://localhost:8000/metrics | grep -E "(prefix_cache|gpu_c
 
 **Model not downloaded**
 ```bash
-./download-model.sh   # downloads ~40 GB
+./download-model.sh   # ~16 GB for the default model
 ```
 
 **Container exits immediately**
@@ -433,3 +450,15 @@ cache in the container's writable layer):
 **Ray workers not joining (Option B)**
 Check that port 6379 is open between nodes and that all nodes are running the same
 vLLM image version. Check head node logs: `docker logs vllm-ray-head --follow`.
+
+**Prefix cache hit rate stuck near 0%**
+Should be > 0.7 after a couple of Claude Code requests. If it's stuck near 0%
+with the per-request signature being exactly +32 hits, the `cch_stripper` hook
+isn't loading. Verify with:
+```bash
+grep "\[cch_stripper\]" ~/Documents/vllm-dgx-spark/litellm.log | tail
+```
+If there are no `[cch_stripper] ... pre_call: stripped N billing-header item(s)`
+lines, the hook isn't firing — check that `start.sh` set `PYTHONPATH` and that
+`litellm-config.yaml` lists `litellm_hooks.cch_stripper` under `callbacks`. Full
+context in `prompt-processing-tuning.md` Test 3.
