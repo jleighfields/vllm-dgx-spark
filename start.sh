@@ -76,7 +76,7 @@ else
         -e MAX_NUM_SEQS=128 \
         -e VLLM_DEEP_GEMM_WARMUP=skip \
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-        -e VLLM_EXTRA_ARGS="--served-model-name $SERVED_MODEL_NAME --quantization $QUANTIZATION --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser $TOOL_CALL_PARSER${EXTRA_VLLM_FLAGS:+ $EXTRA_VLLM_FLAGS}" \
+        -e VLLM_EXTRA_ARGS="--served-model-name $SERVED_MODEL_NAME --quantization $QUANTIZATION --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser $TOOL_CALL_PARSER${MODEL_EXTRA_FLAGS:+ $MODEL_EXTRA_FLAGS}${EXTRA_VLLM_FLAGS:+ $EXTRA_VLLM_FLAGS}" \
         "${extra_env_args[@]+"${extra_env_args[@]}"}" \
         "$VLLM_IMAGE" \
         serve
