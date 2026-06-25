@@ -1,11 +1,16 @@
 # vLLM on DGX Spark — Qwen3 (NVFP4) with Prefix Caching
 
-Serves a **Qwen3 NVFP4** model using the Avarok vLLM container with NVFP4
-quantization and prefix caching enabled, bridged to Claude Code via LiteLLM.
-The active model is configured in a single `model.conf` file.
+Serves a **Qwen3 NVFP4** model using the official NVIDIA NGC vLLM container with
+NVFP4 quantization and prefix caching enabled, bridged to Claude Code via LiteLLM.
+The active model — and the container image / launch style — are configured in a
+single `model.conf` file. (The project originally required the patched Avarok
+container; as of NGC 26.04 the official container supports NVFP4 on the DGX Spark's
+GB10 GPU, so it is now the default, with Avarok kept as a one-line fallback. See
+["Why this container?"](#why-this-container) and `prompt-processing-tuning.md`
+Test 5.)
 
 ```
-Claude Code → LiteLLM :4000 (Anthropic API) → vLLM :8000 (OpenAI API) → Qwen3-NVFP4
+Claude Code → LiteLLM :4001 (Anthropic API) → vLLM :8000 (OpenAI API) → Qwen3-NVFP4
 ```
 
 ## Why vLLM on DGX Spark?
@@ -31,6 +36,9 @@ Edit `model.conf` — all scripts source it automatically:
 
 ```bash
 # model.conf — edit this file to switch models
+VLLM_IMAGE="nvcr.io/nvidia/vllm:26.04-py3"              # container image to run
+VLLM_LAUNCH_STYLE="ngc"                                 # "ngc" | "avarok" (see below)
+LITELLM_PORT=4001                                       # proxy port (4001: 4000 in use locally)
 MODEL_REPO="NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4"     # HuggingFace repo to download
 MODEL_DIR_NAME="Qwen3-Coder-30B-A3B-Instruct-FP4"        # local subdir under models/
 SERVED_MODEL_NAME="NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4"  # name vLLM advertises
@@ -47,9 +55,10 @@ MAX_TOKENS=16384                                         # max LiteLLM response 
 # throughput, with the only real cost being a ~7× → ~3.49× max-context
 # concurrency drop (irrelevant for 1-2 concurrent sessions).
 EXTRA_VLLM_FLAGS='--hf-overrides {"max_position_embeddings":524288,"rope_scaling":{"rope_type":"yarn","factor":2.0,"original_max_position_embeddings":262144}}'
-# Four required env flags: three for NVFP4 MoE on SM121, plus VLLM_ALLOW_LONG_MAX_MODEL_LEN
-# for the YaRN-extended max_model_len (see model.conf for details):
-EXTRA_DOCKER_ENVS="VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_TEST_FORCE_FP8_MARLIN=1 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"
+# EXTRA_DOCKER_ENVS is computed automatically from VLLM_LAUNCH_STYLE (see model.conf):
+#   ngc    — Marlin is selected by the --moe-backend marlin CLI flag, so only the
+#            YaRN bypass (VLLM_ALLOW_LONG_MAX_MODEL_LEN=1) is passed as an env.
+#   avarok — the three NVFP4-MoE-on-SM121 env flags + the YaRN bypass.
 ```
 
 After editing `model.conf`:
@@ -80,22 +89,23 @@ blocks).
 ## Model Alternatives
 
 The current model (`NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4`) is a pure `qwen3_moe`
-MoE — no Mamba layers — which is why prefix caching works in v23. The previous
+MoE — no Mamba layers — which is why prefix caching works on avarok v23. The previous
 default (`Cirrascale/Qwen3-Coder-Next-NVFP4`) is a hybrid GatedDeltaNet+MoE
-architecture; vLLM's prefix-caching support for those hybrid layers is broken in
-v23 (0% hit rate). It can be revived once avarok ships v24+ — see
-`prompt-processing-tuning.md` Test 2 and the Cirrascale alternative-config block
-in `model.conf`.
+architecture; vLLM's prefix-caching support for those hybrid layers was broken in
+avarok v23 (0% hit rate). The four Mamba APC fixes it needs are now in the official
+NGC image (vLLM 0.19/0.20), so the upstream blocker is cleared — reviving it on NGC
+is plausible but untested/deferred. See `prompt-processing-tuning.md` Tests 2 & 5
+and the Cirrascale alternative-config block in `model.conf`.
 
 | Model | Architecture | Quantization | Weights | Prefix caching | Notes |
 |---|---|---|---|---|---|
-| `NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4` *(current)* | `qwen3_moe` — pure MoE, no Mamba | NVFP4 (modelopt_fp4) | ~16 GB | ✅ Works (v23 + cch hook) | Coding-specialized, **512K context via YaRN ×2** (native 256K), ~32-45 t/s solo throughput. |
+| `NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4` *(current)* | `qwen3_moe` — pure MoE, no Mamba | NVFP4 (modelopt_fp4) | ~16 GB | ✅ Works (NGC + cch hook; also avarok v23) | Coding-specialized, **512K context via YaRN ×2** (native 256K), ~32-45 t/s solo throughput. |
 | `Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8` | `qwen3_moe` — pure MoE, no Mamba | FP8 | ~18 GB | ✅ Works | Official Qwen FP8 release; same coder line. |
 | `Qwen/Qwen2.5-Coder-32B-Instruct` | `qwen2` — pure dense transformer | BF16 | ~64 GB | ✅ Works | Gold-standard 32B coder; no NVFP4 available. |
 | `BCCard/Qwen2.5-Coder-32B-Instruct-FP8-Dynamic` | `qwen2` — pure dense transformer | FP8 | ~32 GB | ✅ Works | Community FP8 of above. |
 | `Qwen/Qwen3-32B-FP8` | `qwen3` — pure dense transformer | FP8 | ~32 GB | ✅ Works | General purpose, not coding-specialized. |
 | `RedHatAI/Qwen3-32B-NVFP4` | `qwen3` — pure dense transformer | NVFP4 (compressed-tensors) | ~18 GB | ✅ Works | General purpose. |
-| `Cirrascale/Qwen3-Coder-Next-NVFP4` | Hybrid GatedDeltaNet+MoE | NVFP4 (modelopt_fp4) | ~40 GB | ❌ Broken on v23 | Fastest raw throughput when caching works. Revival needs avarok v24+ AND the cch hook (see below). |
+| `Cirrascale/Qwen3-Coder-Next-NVFP4` | Hybrid GatedDeltaNet+MoE | NVFP4 (modelopt_fp4) | ~40 GB | ⚠️ Broken on avarok v23; unblocked on NGC (untested) | Fastest raw throughput when caching works. Revival needs the NGC image (vLLM 0.19+, has the Mamba APC fixes) AND the cch hook (see below). |
 
 **Note on prefix caching for Claude Code workloads:** Claude Code prepends a
 per-request `x-anthropic-billing-header: ... cch=<hex>;` to every system prompt,
@@ -134,7 +144,7 @@ cd ~/Documents/vllm-dgx-spark
 ## Single Node
 
 ```
-Claude Code → LiteLLM :4000 → vLLM :8000 → GPU
+Claude Code → LiteLLM :4001 → vLLM :8000 → GPU
 ```
 
 ### Start
@@ -144,11 +154,13 @@ cd ~/Documents/vllm-dgx-spark
 ./start.sh
 ```
 
-The vLLM container image (`avarok/dgx-vllm-nvfp4-kernel:v23`) is pulled automatically
-on first run. The first cold start is slow (up to 15-30 minutes) because vLLM must
-compile torch kernels; this compilation is cached in `.cache/vllm/` so subsequent
-starts are much faster (typically 5-10 minutes). `start.sh` will wait up to 60 minutes
-for vLLM to become healthy before giving up.
+The vLLM container image (default `nvcr.io/nvidia/vllm:26.04-py3`, set by
+`VLLM_IMAGE` in `model.conf`) is pulled automatically on first run. The first cold
+start is slow (up to 15-30 minutes) because vLLM must compile torch kernels; this
+compilation is cached in `.cache/vllm/` so subsequent starts are much faster
+(typically 5-10 minutes). Switching `VLLM_IMAGE` to a different vLLM version
+invalidates that cache, so the first start on a new image recompiles. `start.sh`
+will wait up to 60 minutes for vLLM to become healthy before giving up.
 
 Watch progress with `docker logs vllm-server --follow`.
 
@@ -164,7 +176,7 @@ claude
 Replace the IP with your DGX Spark's address:
 
 ```bash
-export ANTHROPIC_BASE_URL=http://192.168.0.7:4000
+export ANTHROPIC_BASE_URL=http://192.168.0.7:4001
 export ANTHROPIC_AUTH_TOKEN=none
 claude
 ```
@@ -181,7 +193,7 @@ claude
 ## Cluster: Option A — Load Balancing (recommended for throughput)
 
 ```
-Claude Code → LiteLLM :4000 → vLLM :8000 (Spark 1)
+Claude Code → LiteLLM :4001 → vLLM :8000 (Spark 1)
                              → vLLM :8000 (Spark 2)
                              → vLLM :8000 (Spark 3)
 ```
@@ -222,7 +234,8 @@ cd ~/Documents/vllm-dgx-spark
 sudo ufw allow from 192.168.0.0/24 to any port 8000
 
 # Allow LiteLLM port for Claude Code clients (run on proxy node)
-sudo ufw allow from 192.168.0.0/24 to any port 4000
+# (matches LITELLM_PORT in model.conf — 4001 here)
+sudo ufw allow from 192.168.0.0/24 to any port 4001
 ```
 
 ---
@@ -230,7 +243,7 @@ sudo ufw allow from 192.168.0.0/24 to any port 4000
 ## Cluster: Option B — Ray Multi-node (for models too large for one Spark)
 
 ```
-Claude Code → LiteLLM :4000 → vLLM :8000 (head node)
+Claude Code → LiteLLM :4001 → vLLM :8000 (head node)
                                     ↕ Ray cluster
                                GPU (Spark 1) + GPU (Spark 2) + GPU (Spark 3)
                                [model sharded across all GPUs]
@@ -285,12 +298,12 @@ Watch progress: `docker logs vllm-ray-head --follow`
 
 | File | Purpose |
 |------|---------|
-| `model.conf` | **Model configuration** — edit this to switch models |
+| `model.conf` | **Model + container configuration** — edit this to switch models, context length, or the vLLM image / launch style (`VLLM_IMAGE`, `VLLM_LAUNCH_STYLE`) |
 | `download-model.sh` | Download the model configured in `model.conf` from HuggingFace |
 | `start.sh` | Single-node: start vLLM + LiteLLM (regenerates `litellm-config.yaml`) |
 | `stop.sh` | Single-node / LB proxy: stop services |
 | `use-local.sh` | Source to configure Claude Code env vars |
-| `litellm-config.yaml` | Auto-generated by `start.sh` — do not edit directly |
+| `litellm-config.yaml` | Auto-generated by `start.sh` from `model.conf` — do not edit directly (gitignored) |
 | `litellm_hooks.py` | LiteLLM pre-call hook that strips Claude Code's per-request `cch=` header so prefix caching works (see `prompt-processing-tuning.md` Test 3) |
 | `cleanup-models.sh` | Interactively delete unused model dirs + HuggingFace hub cache duplicates; never offers the active model |
 | `prompt-processing-tuning.md` | Investigation log: prefix-cache failures, root causes, fixes |
@@ -305,17 +318,23 @@ Watch progress: `docker logs vllm-ray-head --follow`
 | Port | Service | API format |
 |------|---------|-----------|
 | 8000 | vLLM | OpenAI-compatible (`/v1`) |
-| 4000 | LiteLLM proxy | Anthropic-compatible (`/v1/messages`) |
+| 4001 | LiteLLM proxy | Anthropic-compatible (`/v1/messages`) |
 | 6379 | Ray GCS (Option B only) | Ray cluster coordination |
+
+> **LiteLLM port:** set by `LITELLM_PORT` in `model.conf` (sourced by `start.sh`
+> and `use-local.sh`). This host uses **4001** because another local proxy already
+> holds the conventional **4000**; on a clean host you can set it back to 4000.
 
 ## How It Works
 
 LiteLLM acts as a protocol translator. Claude Code speaks the Anthropic Messages API,
 but vLLM speaks the OpenAI Chat Completions API. LiteLLM sits in between, accepting
-Anthropic-format requests on port 4000 and forwarding them as OpenAI-format requests
-to vLLM on port 8000. The `litellm-config.yaml` maps Claude model names
-(`claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`) to the local
-vLLM endpoint so Claude Code works without modification.
+Anthropic-format requests on the LiteLLM port (4001 here; see Ports) and forwarding
+them as OpenAI-format requests to vLLM on port 8000. The `litellm-config.yaml` maps
+Claude model names (`claude-sonnet-4-6`, `claude-opus-4-6`, `claude-opus-4-8`,
+`claude-haiku-4-5-20251001`) plus a `"*"` wildcard catch-all to the local vLLM
+endpoint, so Claude Code works without modification regardless of which model it
+selects.
 
 Tool calling is enabled via `--enable-auto-tool-choice --tool-call-parser <parser>`,
 where the parser is set per-model in `model.conf` (`qwen3_coder` for the Qwen3-Coder
@@ -323,15 +342,23 @@ family, `qwen3_xml` for the general-purpose Qwen3 dense models like RedHatAI's).
 Code's tool-use requests (file edits, bash commands, etc.) are translated into the
 model's native tool-calling format.
 
-### Why the avarok container?
+### Why this container?
 
-The official NVIDIA vLLM container (`nvcr.io/nvidia/vllm`) does not work for NVFP4
-inference on the DGX Spark's GB10 GPU (SM121) through at least release 26.02. The
-root cause is a CUTLASS FP4 GEMM tile size mismatch: CUTLASS tiles were compiled for
-B200's 228 KiB shared memory but GB10 only has 99 KiB, causing a `Failed to run
-cutlass FP4 gemm on sm120` error.
+**Default: official NGC (`nvcr.io/nvidia/vllm:26.04-py3`, vLLM 0.19.0).** When this
+project was first built (Feb–May 2026), the official NVIDIA container could *not* run
+NVFP4 inference on the DGX Spark's GB10 GPU (SM121): a CUTLASS FP4 GEMM tile-size
+mismatch (tiles compiled for B200's 228 KiB shared memory vs GB10's 99 KiB) produced
+`Failed to run cutlass FP4 gemm on sm120`. Native SM121 support landed upstream in
+vLLM v0.16.0 (PR #33517) and, as of NGC **26.04** (vLLM 0.19.0), is packaged with
+the SM121 Marlin/PTX fixes in an official container. On GB10, FP4 MoE still runs
+fastest on **Marlin** (native FP4 kernels exist but don't yet outpace Marlin Int4),
+selected with the `--moe-backend marlin` CLI flag. This is now the default. See
+`prompt-processing-tuning.md` Test 5 for the migration findings and `model.conf` for
+the `VLLM_IMAGE` / `VLLM_LAUNCH_STYLE` knobs.
 
-`avarok/dgx-vllm-nvfp4-kernel` fixes this with four runtime patches:
+**Fallback: avarok (`avarok/dgx-vllm-nvfp4-kernel:v23`).** Before the official
+container worked, this patched image was the only pre-built option with NVFP4 support
+on the Spark. It bundles four runtime patches:
 
 1. **`fix_flashinfer_e2m1_sm121.py`** — software E2M1 conversion via bit manipulation,
    replacing the missing `cvt.rn.satfinite.e2m1x2.f32` PTX instruction on GB10
@@ -342,14 +369,14 @@ cutlass FP4 gemm on sm120` error.
 4. **`fix_mtp_nvfp4_exclusion.py`** — removes NVFP4 exclusion from speculative
    decoding (MTP)
 
-As of vLLM v0.16.0 (released February 25, 2026), native SM121 CUTLASS tile support
-was merged (PR #33517), which should eventually make the avarok patches unnecessary.
-However, v0.16.0 has not yet been packaged into an official NVIDIA NGC container and
-has not been independently validated for the full modelopt_fp4 inference path on GB10.
-Until then, the avarok container remains the only pre-built option with verified
-NVFP4/modelopt_fp4 support on DGX Spark.
+To use it, set `VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v23"` and
+`VLLM_LAUNCH_STYLE="avarok"` in `model.conf`, then `./stop.sh --clean && ./start.sh`.
+(avarok has not published anything past v23 / vLLM 0.16; the official NGC image is
+the maintained path going forward.)
 
 References:
+- [vLLM Release Notes — NVIDIA NGC (26.04 = 0.19.0)](https://docs.nvidia.com/deeplearning/frameworks/vllm-release-notes/index.html)
+- [State of native NVFP4 kernel support on GB10 — NVIDIA Developer Forums](https://forums.developer.nvidia.com/t/state-of-native-nvfp4-kernel-support-on-gb10/372559)
 - [Avarok NVFP4 breakthrough post](https://blog.avarok.net/we-unlocked-nvfp4-on-dgx-spark-and-its-20-faster-than-awq-72b0f3e58b83)
 - [avarok/dgx-vllm on GitHub](https://github.com/Avarok-Cybersecurity/dgx-vllm)
 - [vLLM PR #33517 — SM121 CUTLASS support](https://github.com/vllm-project/vllm/pull/33517)
@@ -436,16 +463,18 @@ Ensure `ANTHROPIC_AUTH_TOKEN=none` is exported. LiteLLM does not require authent
 by default.
 
 **Container crashes at startup with `cvt.e2m1x2 not supported on sm_121`**
+*(avarok launch style only)*
 
 FlashInfer 0.6.3 (shipped in both v22 and v23 of the avarok container) includes
 Blackwell SM120 TMA grouped GEMM kernels that use the `cvt.e2m1x2` PTX instruction,
 which is not available on SM121 (GB10). When vLLM selects the `FLASHINFER_CUTLASS`
 MoE backend, it tries to JIT-compile these kernels and crashes.
 
-Fix: ensure `model.conf` has all three required env vars:
-```
-EXTRA_DOCKER_ENVS="VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_TEST_FORCE_FP8_MARLIN=1"
-```
+Fix: when running `VLLM_LAUNCH_STYLE="avarok"`, the three Marlin env vars are set
+automatically (`EXTRA_DOCKER_ENVS` is computed from the launch style in `model.conf`).
+If you see this crash, confirm the launch style is `avarok` and that the env vars
+reach the container (`docker inspect vllm-server | grep VLLM_`). The NGC launch
+style avoids this path entirely by selecting Marlin via `--moe-backend marlin`.
 Then restart with a fresh container (the failed compilation may have left a corrupted
 cache in the container's writable layer):
 ```bash

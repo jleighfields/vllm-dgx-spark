@@ -33,6 +33,12 @@ VLLM_PORT=8000
 RAY_PORT=6379
 MODEL_DIR="$PROJECT_DIR/models/$MODEL_DIR_NAME"
 NUM_NODES="${1:?Usage: $0 <num_nodes>}"
+
+# Cluster scripts remain avarok-only for now (single-node start.sh is the path
+# that supports the NGC launch style — see model.conf VLLM_LAUNCH_STYLE). Restore
+# the avarok Marlin env trio that model.conf omits under its default ngc style, so
+# this avarok `serve` invocation still routes NVFP4 MoE to Marlin on SM121.
+EXTRA_DOCKER_ENVS="VLLM_NVFP4_GEMM_BACKEND=marlin VLLM_USE_FLASHINFER_MOE_FP4=0 VLLM_TEST_FORCE_FP8_MARLIN=1${_YARN_DOCKER_ENV:+ $_YARN_DOCKER_ENV}"
 # Each Spark has 1 GPU; total tensor-parallel size = number of nodes
 TOTAL_TP="$NUM_NODES"
 
@@ -127,7 +133,8 @@ wait_for_http "http://localhost:${VLLM_PORT}/health" "vLLM ($NUM_NODES-node clus
 
 LITELLM="$PROJECT_DIR/.venv/bin/litellm"
 LITELLM_PID_FILE="$PROJECT_DIR/.litellm.pid"
-LITELLM_PORT=4000
+# LITELLM_PORT comes from model.conf (sourced above); fall back to 4000 if unset.
+LITELLM_PORT="${LITELLM_PORT:-4000}"
 
 [[ -x "$LITELLM" ]] || die "litellm not found. Run: uv sync --project $PROJECT_DIR"
 

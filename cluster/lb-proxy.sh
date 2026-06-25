@@ -17,7 +17,8 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../model.conf
 source "$PROJECT_DIR/model.conf"
 
-LITELLM_PORT=4000
+# LITELLM_PORT comes from model.conf (sourced above); fall back to 4000 if unset.
+LITELLM_PORT="${LITELLM_PORT:-4000}"
 VLLM_PORT=8000
 LITELLM="$PROJECT_DIR/.venv/bin/litellm"
 LITELLM_PID_FILE="$PROJECT_DIR/.litellm.pid"
