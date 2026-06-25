@@ -281,8 +281,9 @@ References:
 
 ### 5. Migrating off avarok to the official NGC container (2026-06-25)
 
-**Status: Plumbing landed; NGC set as the default. Runtime A/B not yet run —
-results table below is a skeleton to fill in after testing.**
+**Status: DONE — migrated to NGC 26.04 (vLLM 0.19.0), validated on live Claude
+Code traffic 2026-06-25. NGC 26.05 (0.20.1) was tested and rejected (gibberish on
+real workloads — see results table). avarok v23 retained as a one-line fallback.**
 
 **Motivation:** The project used the avarok `dgx-vllm-nvfp4-kernel:v23` container
 only because, when it was built, the official NVIDIA container could not run NVFP4

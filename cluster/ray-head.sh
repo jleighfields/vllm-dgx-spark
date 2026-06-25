@@ -133,7 +133,8 @@ wait_for_http "http://localhost:${VLLM_PORT}/health" "vLLM ($NUM_NODES-node clus
 
 LITELLM="$PROJECT_DIR/.venv/bin/litellm"
 LITELLM_PID_FILE="$PROJECT_DIR/.litellm.pid"
-LITELLM_PORT=4000
+# LITELLM_PORT comes from model.conf (sourced above); fall back to 4000 if unset.
+LITELLM_PORT="${LITELLM_PORT:-4000}"
 
 [[ -x "$LITELLM" ]] || die "litellm not found. Run: uv sync --project $PROJECT_DIR"
 
