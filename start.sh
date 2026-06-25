@@ -13,7 +13,8 @@ VLLM_IMAGE="${VLLM_IMAGE:?VLLM_IMAGE not set — check model.conf}"
 VLLM_LAUNCH_STYLE="${VLLM_LAUNCH_STYLE:-ngc}"
 CONTAINER_NAME="vllm-server"
 VLLM_PORT=8000
-LITELLM_PORT=4000
+# LITELLM_PORT comes from model.conf (sourced above); fall back to 4000 if unset.
+LITELLM_PORT="${LITELLM_PORT:-4000}"
 LITELLM_PID_FILE="$SCRIPT_DIR/.litellm.pid"
 LITELLM="$SCRIPT_DIR/.venv/bin/litellm"
 MODEL_DIR="$SCRIPT_DIR/models/$MODEL_DIR_NAME"
@@ -194,6 +195,16 @@ model_list:
       max_tokens: ${MAX_MODEL_LEN}
       max_output_tokens: ${MAX_TOKENS}
 
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: openai/${SERVED_MODEL_NAME}
+      api_base: http://localhost:${VLLM_PORT}/v1
+      api_key: "none"
+      max_tokens: ${MAX_TOKENS}
+    model_info:
+      max_tokens: ${MAX_MODEL_LEN}
+      max_output_tokens: ${MAX_TOKENS}
+
   - model_name: claude-haiku-4-5-20251001
     litellm_params:
       model: openai/${SERVED_MODEL_NAME}
@@ -203,6 +214,17 @@ model_list:
     model_info:
       max_tokens: ${MAX_MODEL_LEN}
       max_output_tokens: ${MAX_TOKENS}
+
+  # Wildcard catch-all — routes ANY other Claude model id Claude Code may send
+  # (e.g. when you switch the active model) to the same local vLLM backend, so a
+  # model switch never 400s with "not found in config models mapping". Named
+  # entries above still match first (and carry explicit context caps).
+  - model_name: "*"
+    litellm_params:
+      model: openai/${SERVED_MODEL_NAME}
+      api_base: http://localhost:${VLLM_PORT}/v1
+      api_key: "none"
+      max_tokens: ${MAX_TOKENS}
 
 litellm_settings:
   drop_params: true
