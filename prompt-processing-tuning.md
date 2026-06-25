@@ -319,28 +319,45 @@ the swap is not just an image-tag change:
   set the avarok env trio locally so the `model.conf` default change doesn't break
   them.
 
-**Open verify items (resolve during testing):**
-- `QUANTIZATION`: avarok wanted `modelopt_fp4`; NGC/0.19 may want `modelopt`.
-  Confirm against `vllm serve --help` in the image; switch if rejected at startup.
-- `--attention-backend`: left at NGC's default (avarok pinned `flashinfer`); add
-  back only if it helps.
-- Whether `CUTE_DSL_ARCH=sm_121a` is needed on the NGC image.
+**Open verify items — RESOLVED during live testing (2026-06-25):**
+- `QUANTIZATION`: **`modelopt_fp4` is accepted by NGC 0.19/0.20** (startup args show
+  `quantization: 'modelopt_fp4'`). No switch to `modelopt` needed.
+- `--attention-backend`: NGC default works fine; left unset.
+- `CUTE_DSL_ARCH=sm_121a`: not needed — Marlin is selected via `--moe-backend
+  marlin` and boots clean without it.
 
-**Results (to fill in after the A/B — compare to avarok v23 baseline in Test 4):**
+Both NGC startups log `Using 'MARLIN' NvFp4 MoE backend` and two benign warnings:
+`Your GPU does not have native support for FP4 ... weight-only ... Marlin` (expected)
+and `w1_weight_scale_2 must match w3_weight_scale_2. Accuracy may be affected`
+(checkpoint property — relevant to the 26.05 finding below).
 
-| Metric | avarok v23 (baseline) | NGC 26.04 (vLLM 0.19) |
-|---|---|---|
-| Boots clean on SM121 (no cvt.e2m1x2 / cutlass FP4 crash) | ✅ | _TBD_ |
-| Quantization arg accepted | `modelopt_fp4` | _TBD_ |
-| Prefix cache hit rate (cch hook on, req 2+) | ~99.96% | _TBD_ |
-| Gen throughput @ ~50-70K prompt | ~30 t/s | _TBD_ |
-| Gen throughput @ ~150K prompt | ~23-27 t/s | _TBD_ |
-| Avg TTFT (cached) | sub-second | _TBD_ |
-| Tool calling via qwen3_coder parser | ✅ | _TBD_ |
+**Results (live Claude Code traffic, 2026-06-25):**
 
-**Decision gate:** keep NGC if it boots, caches, and matches throughput within
-noise; otherwise flip `VLLM_LAUNCH_STYLE` back to `avarok` (plumbing + findings
-stay). 26.05 (vLLM 0.20.1) is a follow-up once 26.04 is validated.
+| Metric | avarok v23 (baseline) | NGC 26.04 (vLLM 0.19.0) | NGC 26.05 (vLLM 0.20.1) |
+|---|---|---|---|
+| Boots clean on SM121 | ✅ | ✅ | ✅ |
+| Quantization arg accepted | `modelopt_fp4` | ✅ `modelopt_fp4` | ✅ `modelopt_fp4` |
+| MARLIN MoE backend selected | (env trio) | ✅ `--moe-backend marlin` | ✅ `--moe-backend marlin` |
+| Prefix cache hit rate (cch hook on) | ~99.96% per-req | **85% cumulative & climbing** | n/a (pulled before warm-up) |
+| Gen throughput | ~30 / ~23-27 t/s | **22–46 t/s (in range)** | n/a |
+| Avg TTFT | sub-second | ~1.0s incl. cold starts | n/a |
+| Tool calling via qwen3_coder | ✅ | ✅ | (untested — see below) |
+| **Output quality on real workload** | ✅ | ✅ **coherent** | ❌ **GIBBERISH** |
+
+**26.05 (vLLM 0.20.1) regression — DO NOT USE (yet):** Short prompts and direct
+`/v1/completions` or `/v1/chat/completions` (even at temperature 1.0) are perfectly
+coherent on 26.05. But real Claude Code workloads — large ~50K+ system prompt +
+tool definitions + heavy prefix caching + YaRN 512K — produce **garbage output**
+(random tokens, runs of `%`, broken markup). The likely culprit is the FP4/Marlin
+SM121 accuracy gap (the `weight_scale_2` warning) compounding through the
+long-context / prefix-cache path in 0.20.1; 0.19.0 (26.04) does not exhibit it.
+Reproduced and rolled back same day.
+
+**Decision: keep NGC 26.04 as the default.** It boots clean, caches (~85% and
+rising), matches avarok throughput, and produces coherent output on the real
+workload. avarok v23 remains the one-line fallback; **26.05 is pinned off** with a
+warning in `model.conf` — retry only on a newer NGC tag and re-run the real-workload
+quality check before trusting it.
 
 References:
 - [avarok/dgx-vllm-nvfp4-kernel — Docker Hub tags](https://hub.docker.com/r/avarok/dgx-vllm-nvfp4-kernel/tags)
