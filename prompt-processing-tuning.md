@@ -32,12 +32,16 @@ of the current vLLM build for this model. See tests below for details.
 > per-request hit rate went from 0.34% → **99.96%** within two requests. See
 > **Test 3** below.
 >
-> The Mamba upstream story is unchanged: all four missing APC fixes (#34874,
-> #35480, #34798, #35219) merged into vLLM `main` between 2026-02-23 and
-> 2026-03-10, but no avarok image newer than v23 (2026-02-21) has been published,
-> so the previous Cirrascale model would now require **both** an avarok v24+ rebuild
-> *and* the Test 3 hook to actually cache. Tracking issue #26201 remains open as a
-> roll-up. https://github.com/vllm-project/vllm/issues/26201
+> The Mamba upstream story (updated 2026-06-25): all four missing APC fixes
+> (#34874, #35480, #34798, #35219) merged into vLLM `main` between 2026-02-23 and
+> 2026-03-10. avarok still has not published anything past v23 (2026-02-21) — but
+> those fixes are now shipping in the **official NGC vLLM container** (26.04 =
+> vLLM 0.19.0, 26.05 = vLLM 0.20.1), which also now supports NVFP4 on SM121. So the
+> Cirrascale revival no longer depends on a hypothetical avarok v24: it needs the
+> official NGC image *and* the Test 3 hook. The container migration that makes this
+> reachable is **Test 5** below (Cirrascale itself remains deferred/untested).
+> Tracking issue #26201 remains open as a roll-up.
+> https://github.com/vllm-project/vllm/issues/26201
 
 ---
 
@@ -272,6 +276,77 @@ predominantly short interactive Q&A — instructions in the "Rollback to native
 References:
 - `model.conf` (active config)
 - HuggingFace [Qwen3-Coder-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) (model card claims 1M with YaRN)
+
+---
+
+### 5. Migrating off avarok to the official NGC container (2026-06-25)
+
+**Status: Plumbing landed; NGC set as the default. Runtime A/B not yet run —
+results table below is a skeleton to fill in after testing.**
+
+**Motivation:** The project used the avarok `dgx-vllm-nvfp4-kernel:v23` container
+only because, when it was built, the official NVIDIA container could not run NVFP4
+on the DGX Spark's GB10 GPU (SM121) — a CUTLASS FP4 GEMM tile-size mismatch (tiles
+sized for B200's 228 KiB shared memory vs GB10's 99 KiB) crashed it. Two open
+items were tracked: (1) avarok never shipped a v24+, and (2) upstream's native
+SM121 fix (vLLM v0.16.0, PR #33517) had not been packaged into an official NGC
+container. A status check on 2026-06-25 resolved item (2).
+
+**Findings (web research, 2026-06-25):**
+
+| Question | Finding |
+|---|---|
+| avarok past v23? | **No.** Docker Hub shows only v21/v22/v23 + `latest`; `latest` == v23, pushed ~Feb 2026. Item (1) still open on avarok's side. |
+| Official NGC caught up? | **Yes.** `nvcr.io/nvidia/vllm:26.04-py3` = vLLM **0.19.0** with documented SM121 Marlin/PTX fixes ("the de-facto stable Spark NGC"); `26.05-py3` = vLLM **0.20.1**. |
+| Native FP4 kernels on GB10 now? | They exist in current FlashInfer but **still don't outpace Marlin Int4**; gap "substantially narrowed." W4A4 ≈ non-existent, W4A16 better. → **Keep Marlin.** |
+| How is Marlin selected on NGC? | The `--moe-backend marlin` CLI flag — replaces avarok's `VLLM_NVFP4_GEMM_BACKEND` / `VLLM_USE_FLASHINFER_MOE_FP4=0` / `VLLM_TEST_FORCE_FP8_MARLIN=1` env trio. |
+| Mamba APC fixes reachable? | **Yes**, bundled in vLLM 0.19/0.20 — so the hybrid Cirrascale model is now upstream-unblocked (revival still deferred/untested). |
+
+**Decision:** Migrate to the official NGC container (default `26.04-py3`), keep the
+same model (`NVFP4/Qwen3-Coder-30B-A3B-Instruct-FP4`), the same 512K YaRN profile,
+and the same `cch_stripper` hook (Test 3 — still required; orthogonal to the
+container). avarok stays available as a one-line fallback.
+
+**Implementation:** The avarok and NGC images use different launch conventions, so
+the swap is not just an image-tag change:
+- `model.conf` — new `VLLM_IMAGE` and `VLLM_LAUNCH_STYLE` (`ngc` | `avarok`) vars;
+  the SM121 env-flag section is now launch-style-aware (NGC drops the avarok env
+  trio in favor of `--moe-backend marlin`).
+- `start.sh` — `docker run` branches on `VLLM_LAUNCH_STYLE`: avarok keeps the
+  env-var `serve` entrypoint; NGC issues a full `vllm serve /model --flags…`
+  pass-through command.
+- Cluster scripts (`lb-worker.sh`, `ray-head.sh`) remain avarok-only for now and
+  set the avarok env trio locally so the `model.conf` default change doesn't break
+  them.
+
+**Open verify items (resolve during testing):**
+- `QUANTIZATION`: avarok wanted `modelopt_fp4`; NGC/0.19 may want `modelopt`.
+  Confirm against `vllm serve --help` in the image; switch if rejected at startup.
+- `--attention-backend`: left at NGC's default (avarok pinned `flashinfer`); add
+  back only if it helps.
+- Whether `CUTE_DSL_ARCH=sm_121a` is needed on the NGC image.
+
+**Results (to fill in after the A/B — compare to avarok v23 baseline in Test 4):**
+
+| Metric | avarok v23 (baseline) | NGC 26.04 (vLLM 0.19) |
+|---|---|---|
+| Boots clean on SM121 (no cvt.e2m1x2 / cutlass FP4 crash) | ✅ | _TBD_ |
+| Quantization arg accepted | `modelopt_fp4` | _TBD_ |
+| Prefix cache hit rate (cch hook on, req 2+) | ~99.96% | _TBD_ |
+| Gen throughput @ ~50-70K prompt | ~30 t/s | _TBD_ |
+| Gen throughput @ ~150K prompt | ~23-27 t/s | _TBD_ |
+| Avg TTFT (cached) | sub-second | _TBD_ |
+| Tool calling via qwen3_coder parser | ✅ | _TBD_ |
+
+**Decision gate:** keep NGC if it boots, caches, and matches throughput within
+noise; otherwise flip `VLLM_LAUNCH_STYLE` back to `avarok` (plumbing + findings
+stay). 26.05 (vLLM 0.20.1) is a follow-up once 26.04 is validated.
+
+References:
+- [avarok/dgx-vllm-nvfp4-kernel — Docker Hub tags](https://hub.docker.com/r/avarok/dgx-vllm-nvfp4-kernel/tags)
+- [vLLM Release Notes — NVIDIA Docs (26.04 = 0.19.0, 26.05 = 0.20.1)](https://docs.nvidia.com/deeplearning/frameworks/vllm-release-notes/index.html)
+- [State of native NVFP4 kernel support on GB10 — NVIDIA Developer Forums](https://forums.developer.nvidia.com/t/state-of-native-nvfp4-kernel-support-on-gb10/372559)
+- [Marlin Fix: NVFP4 Actually Works on SM121 (DGX Spark) — NVIDIA Developer Forums](https://forums.developer.nvidia.com/t/marlin-fix-nvfp4-actually-works-on-sm121-dgx-spark/365119)
 
 ---
 

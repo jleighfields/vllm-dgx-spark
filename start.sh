@@ -8,7 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=model.conf
 source "$SCRIPT_DIR/model.conf"
 
-VLLM_IMAGE="avarok/dgx-vllm-nvfp4-kernel:v23"
+# VLLM_IMAGE and VLLM_LAUNCH_STYLE come from model.conf (sourced above).
+VLLM_IMAGE="${VLLM_IMAGE:?VLLM_IMAGE not set — check model.conf}"
+VLLM_LAUNCH_STYLE="${VLLM_LAUNCH_STYLE:-ngc}"
 CONTAINER_NAME="vllm-server"
 VLLM_PORT=8000
 LITELLM_PORT=4000
@@ -52,34 +54,73 @@ else
     docker pull "$VLLM_IMAGE"
     log "Image ready."
 
-    log "Starting vLLM container ..."
-    # The official NVIDIA vLLM container (26.01) lacks proper NVFP4 kernel support
-    # for the DGX Spark's GB10 GPU (SM121). CUTLASS FP4 GEMM tiles are sized for
-    # B200's 228 KiB shared memory but GB10 only has 99 KiB, causing silent fallback
-    # to slower paths. Avarok's patched container fixes this with a software E2M1
-    # conversion fallback and Marlin MoE backend routing for SM121.
-    # See: https://blog.avarok.net/we-unlocked-nvfp4-on-dgx-spark-and-its-20-faster-than-awq-72b0f3e58b83
+    log "Starting vLLM container (image: $VLLM_IMAGE, launch style: $VLLM_LAUNCH_STYLE) ..."
+    # Two launch conventions, selected by VLLM_LAUNCH_STYLE in model.conf:
+    #
+    #   ngc    — official nvcr.io/nvidia/vllm:*-py3 image. As of NGC 26.04
+    #            (vLLM 0.19) the official container supports NVFP4 inference on the
+    #            DGX Spark's GB10 GPU (SM121); the old CUTLASS FP4 GEMM tile crash is
+    #            fixed upstream, and Marlin (still the fastest FP4-MoE path on GB10)
+    #            is selected with the --moe-backend marlin CLI flag below. This image
+    #            uses a pass-through entrypoint, so we issue a full `vllm serve` cmd.
+    #
+    #   avarok — avarok/dgx-vllm-nvfp4-kernel image. Built before the official
+    #            container could do FP4 on SM121; it routes everything to Marlin via
+    #            the env trio in EXTRA_DOCKER_ENVS and uses an env-var `serve`
+    #            entrypoint. Kept as a fallback.
+    #            See: https://blog.avarok.net/we-unlocked-nvfp4-on-dgx-spark-and-its-20-faster-than-awq-72b0f3e58b83
     extra_env_args=()
     for kv in $EXTRA_DOCKER_ENVS; do extra_env_args+=(-e "$kv"); done
 
-    docker run -d \
-        --gpus all \
-        --net host \
-        --ipc host \
-        --name "$CONTAINER_NAME" \
-        -v "$MODEL_DIR:/model" \
-        -v "$SCRIPT_DIR/.cache/vllm:/root/.cache/vllm" \
-        -e MODEL=/model \
-        -e PORT="$VLLM_PORT" \
-        -e GPU_MEMORY_UTIL=0.85 \
-        -e MAX_MODEL_LEN="$MAX_MODEL_LEN" \
-        -e MAX_NUM_SEQS=128 \
-        -e VLLM_DEEP_GEMM_WARMUP=skip \
-        -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-        -e VLLM_EXTRA_ARGS="--served-model-name $SERVED_MODEL_NAME --quantization $QUANTIZATION --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser $TOOL_CALL_PARSER${MODEL_EXTRA_FLAGS:+ $MODEL_EXTRA_FLAGS}${EXTRA_VLLM_FLAGS:+ $EXTRA_VLLM_FLAGS}" \
-        "${extra_env_args[@]+"${extra_env_args[@]}"}" \
-        "$VLLM_IMAGE" \
-        serve
+    # Flags common to both launch styles.
+    common_args=(
+        -d
+        --gpus all
+        --net host
+        --ipc host
+        --name "$CONTAINER_NAME"
+        -v "$MODEL_DIR:/model"
+        -v "$SCRIPT_DIR/.cache/vllm:/root/.cache/vllm"
+        -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    )
+
+    if [[ "$VLLM_LAUNCH_STYLE" == "ngc" ]]; then
+        # Pass-through entrypoint: image is followed by the full `vllm serve` command.
+        docker run \
+            "${common_args[@]}" \
+            "${extra_env_args[@]+"${extra_env_args[@]}"}" \
+            "$VLLM_IMAGE" \
+            vllm serve /model \
+                --served-model-name "$SERVED_MODEL_NAME" \
+                --host 0.0.0.0 --port "$VLLM_PORT" \
+                --quantization "$QUANTIZATION" \
+                --moe-backend marlin \
+                --gpu-memory-utilization 0.85 \
+                --max-model-len "$MAX_MODEL_LEN" \
+                --max-num-seqs 128 \
+                --enable-prefix-caching \
+                --enable-auto-tool-choice --tool-call-parser "$TOOL_CALL_PARSER" \
+                ${MODEL_EXTRA_FLAGS:+ $MODEL_EXTRA_FLAGS}${EXTRA_VLLM_FLAGS:+ $EXTRA_VLLM_FLAGS}
+        # --moe-backend marlin — GB10 has no native FP4 compute; FP4 MoE must run on
+        #     Marlin (the CUTLASS FP4 GEMM path crashes on SM121). This replaces the
+        #     avarok env trio.
+        # --attention-backend is intentionally left at the image default for NGC;
+        #     add --attention-backend flashinfer only if testing shows it helps.
+    else
+        # avarok env-var `serve` entrypoint.
+        docker run \
+            "${common_args[@]}" \
+            -e MODEL=/model \
+            -e PORT="$VLLM_PORT" \
+            -e GPU_MEMORY_UTIL=0.85 \
+            -e MAX_MODEL_LEN="$MAX_MODEL_LEN" \
+            -e MAX_NUM_SEQS=128 \
+            -e VLLM_DEEP_GEMM_WARMUP=skip \
+            -e VLLM_EXTRA_ARGS="--served-model-name $SERVED_MODEL_NAME --quantization $QUANTIZATION --enable-prefix-caching --attention-backend flashinfer --enable-auto-tool-choice --tool-call-parser $TOOL_CALL_PARSER${MODEL_EXTRA_FLAGS:+ $MODEL_EXTRA_FLAGS}${EXTRA_VLLM_FLAGS:+ $EXTRA_VLLM_FLAGS}" \
+            "${extra_env_args[@]+"${extra_env_args[@]}"}" \
+            "$VLLM_IMAGE" \
+            serve
+    fi
     #
     # --served-model-name — the name vLLM advertises on its /v1/models endpoint.
     #   Must match the `model: openai/<name>` value in litellm-config.yaml.
@@ -94,21 +135,24 @@ else
     #   as GPU memory allows; requests exceeding available KV cache are queued,
     #   not rejected.
     #
-    # SM121 (DGX Spark GB10) MoE compatibility — set in model.conf EXTRA_DOCKER_ENVS:
-    #   VLLM_NVFP4_GEMM_BACKEND=marlin — routes dense FP4 GEMM to Marlin (SM121 has
-    #       99 KiB shared memory vs B200's 228 KiB; default CUTLASS tiles don't fit).
-    #   VLLM_USE_FLASHINFER_MOE_FP4=0 — disables FlashInfer MoE backends; FlashInfer
-    #       0.6.3 compiles Blackwell SM120 TMA kernels using cvt.e2m1x2 PTX, which is
-    #       not supported on SM121, crashing vLLM at startup.
-    #   VLLM_TEST_FORCE_FP8_MARLIN=1 — forces Marlin as the MoE backend (the "FP8"
-    #       name is misleading — this also applies to NVFP4 MoE layers).
+    # SM121 (DGX Spark GB10) MoE compatibility — depends on VLLM_LAUNCH_STYLE:
+    #   ngc    — Marlin is selected by the --moe-backend marlin CLI flag above.
+    #   avarok — Marlin is selected by the env trio in model.conf EXTRA_DOCKER_ENVS:
+    #     VLLM_NVFP4_GEMM_BACKEND=marlin — routes dense FP4 GEMM to Marlin (SM121 has
+    #         99 KiB shared memory vs B200's 228 KiB; default CUTLASS tiles don't fit).
+    #     VLLM_USE_FLASHINFER_MOE_FP4=0 — disables FlashInfer MoE backends; FlashInfer
+    #         0.6.3 compiles Blackwell SM120 TMA kernels using cvt.e2m1x2 PTX, which is
+    #         not supported on SM121, crashing vLLM at startup.
+    #     VLLM_TEST_FORCE_FP8_MARLIN=1 — forces Marlin as the MoE backend (the "FP8"
+    #         name is misleading — this also applies to NVFP4 MoE layers).
     #
     # Startup optimization notes:
     #   -v .cache/vllm:/root/.cache/vllm — persists torch compile cache across
     #       container restarts. First cold start is slow; subsequent restarts skip
-    #       recompilation entirely.
-    #   VLLM_DEEP_GEMM_WARMUP=skip — skips DeepGEMM JIT warmup (saves minutes;
-    #       first-token latency may spike briefly on initial requests).
+    #       recompilation entirely. (Switching VLLM_IMAGE to a different vLLM version
+    #       invalidates this cache, so the first start on a new image recompiles.)
+    #   VLLM_DEEP_GEMM_WARMUP=skip (avarok only) — skips DeepGEMM JIT warmup (saves
+    #       minutes; first-token latency may spike briefly on initial requests).
 
     log "Container started. Loading NVFP4 model (allow 15 min) ..."
 fi
